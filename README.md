@@ -9,21 +9,27 @@ re-probe their models, and edit everything afterwards from the TUI or via agent 
 
 ## Quick Start
 
-1. Install the plugin:
-   ```bash
-   opencode plugin add opencode-custom-providers
-   ```
-   Or:
-   ```bash
-   bun add github:bagasdevs/opencode-custom-providers && bun pm trust opencode-custom-providers
-   ```
-2. Confirm it loaded:
-   ```bash
-   opencode plugin list
-   ```
-3. Restart opencode, open the TUI, run `/add-provider`, and follow the prompts:
-   pick a flavor (e.g. OpenAI Chat), enter the base URL and API key, done.
-   Models are discovered and enriched automatically.
+**1. Install the plugin**
+
+```bash
+opencode plugin add opencode-custom-providers
+```
+
+**Or:**
+
+```bash
+bun add github:bagasdevs/opencode-custom-providers && bun pm trust opencode-custom-providers
+```
+
+**2. Confirm it loaded**
+
+```bash
+opencode plugin list
+```
+
+**3. Restart opencode, open the TUI, run `/add-provider`, and follow the prompts:**
+pick a flavor (e.g. OpenAI Chat), enter the base URL and API key, done.
+Models are discovered and enriched automatically.
 
 ## Features
 
@@ -38,7 +44,7 @@ re-probe their models, and edit everything afterwards from the TUI or via agent 
 ## Commands
 
 | TUI | Agent tools |
-|---|---|
+| --- | --- |
 | `/add-provider` | `add-provider`, `add-from-catalog`, `list-catalog-sites` |
 | `/reprobe-models` | `reprobe-models`, `apply-reconcile` |
 | `/edit-provider` | `edit-provider` |
@@ -48,9 +54,15 @@ re-probe their models, and edit everything afterwards from the TUI or via agent 
 ## Configuration
 
 ```json
-{ "provider": { "my-proxy": {
-  "flavor": "openai-chat", "dynamic": true,
-  "options": { "baseURL": "https://api.proxy.com/v1" } } } }
+{
+  "provider": {
+    "my-proxy": {
+      "flavor": "openai-chat",
+      "dynamic": true,
+      "options": { "baseURL": "https://api.proxy.com/v1" }
+    }
+  }
+}
 ```
 
 Discovery runs for providers with `options.baseURL` plus `dynamic: true` or no stored models.
