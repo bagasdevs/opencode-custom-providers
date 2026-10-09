@@ -1,0 +1,15 @@
+node_modules/
+dist/
+coverage/
+.firecrawl/
+*.tsbuildinfo
+*.log
+.DS_Store
+.gitnexus
+config.json
+.opencode/
+TODO.md
+AGENTS.md
+CLAUDE.md
+
+.claude/
