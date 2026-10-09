@@ -32,7 +32,7 @@
     "test:src": "vitest run",
     "typecheck:tests": "tsc -p tsconfig.test.json",
     "lint": "eslint src tests",
-    "prepare": "npm run build --silent || echo \"prepare: build skipped (devDependencies probably absent; using committed dist/)\"",
+    "prepare": "npm run build || echo \"prepare: build skipped (devDependencies probably absent; using committed dist/)\"",
     "prepublishOnly": "npm test"
   },
   "keywords": [
@@ -47,7 +47,8 @@
   "author": "bagasdevs",
   "license": "MIT",
   "dependencies": {
-    "@opencode-ai/plugin": "^1.14.0"
+    "@opencode-ai/plugin": "^1.14.0",
+    "opencode-custom-providers": "github:bagasdevs/opencode-custom-providers"
   },
   "devDependencies": {
     "@opencode-ai/sdk": "^1.14.0",
@@ -64,5 +65,8 @@
   },
   "engines": {
     "opencode": ">=1.14.0"
-  }
+  },
+  "trustedDependencies": [
+    "opencode-custom-providers"
+  ]
 }
