@@ -47,8 +47,7 @@
   "author": "bagasdevs",
   "license": "MIT",
   "dependencies": {
-    "@opencode-ai/plugin": "^1.14.0",
-    "opencode-custom-providers": "github:bagasdevs/opencode-custom-providers"
+    "@opencode-ai/plugin": "^1.14.0"
   },
   "devDependencies": {
     "@opencode-ai/sdk": "^1.14.0",

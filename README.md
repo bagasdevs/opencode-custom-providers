@@ -13,7 +13,7 @@ re-probe their models, and edit everything afterwards from the TUI or via agent 
    ```bash
    opencode plugin add opencode-custom-providers
    ```
-   Without registry access:
+   Or:
    ```bash
    bun add github:bagasdevs/opencode-custom-providers && bun pm trust opencode-custom-providers
    ```
