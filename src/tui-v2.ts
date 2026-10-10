@@ -96,7 +96,7 @@ function done(ctx: V2TuiContext, message: string): void {
 }
 
 function statusSuffix(provider: ProviderRow): string {
-  return provider.pending > 0 ? ` (${provider.pending} new model(s) found — run /reload-models to add them)` : ""
+  return provider.pending > 0 ? ` (${provider.pending} new model(s) found: run /reload-models to add them)` : ""
 }
 
 function cancelled(ctx: V2TuiContext): void {
@@ -117,7 +117,7 @@ async function pickProvider(ctx: V2TuiContext): Promise<ProviderRow | undefined>
     options: providers.map(provider => ({
       title: provider.id,
       value: provider.id,
-      description: `${provider.baseURL} — ${provider.models} model(s)${statusSuffix(provider)}`,
+      description: `${provider.baseURL}: ${provider.models} model(s)${statusSuffix(provider)}`,
     })),
   })
   if (!selected) cancelled(ctx)
@@ -130,7 +130,7 @@ async function askApiKey(ctx: V2TuiContext, title: string): Promise<string | und
     description:
       "Paste the key you got from your provider (it often starts with sk-). Most providers need one. " +
       "It is saved in opencode's secure key store, never shown again, and you can replace it any time with /edit-provider. " +
-      "Leave empty only for local servers like Ollama. Press Esc to cancel — nothing is saved until the last step.",
+      "Leave empty only for local servers like Ollama. Press Esc to cancel: nothing is saved until the last step.",
   })
 }
 async function promptManualAdd(
@@ -173,7 +173,7 @@ function repairBaseURL(raw: string): string | undefined {
 
 async function wizardAdd(ctx: V2TuiContext): Promise<void> {
   let providerId = await ctx.ui.dialog.prompt({
-    title: "Step 1 of 5 — Name for this provider",
+    title: "Step 1 of 5: Name for this provider",
     description:
       "Any short name you will recognise later. Letters, numbers, hyphens and underscores only. Example: my-proxy",
     placeholder: "my-proxy",
@@ -186,7 +186,7 @@ async function wizardAdd(ctx: V2TuiContext): Promise<void> {
   if (!ID_PATTERN.test(providerId)) {
     fail(
       ctx,
-      `'${providerId}' cannot be used as a name. Use only letters, numbers, hyphens and underscores — for example my-proxy. Run /add-provider to start again.`,
+      `'${providerId}' cannot be used as a name. Use only letters, numbers, hyphens and underscores: for example my-proxy. Run /add-provider to start again.`,
     )
     return
   }
@@ -221,9 +221,9 @@ async function wizardAdd(ctx: V2TuiContext): Promise<void> {
   let baseURL: string | undefined
   for (;;) {
     baseURL = await ctx.ui.dialog.prompt({
-      title: "Step 2 of 5 — Base URL",
+      title: "Step 2 of 5: Base URL",
       description:
-        "Paste your provider's API address — it is on their setup page, labelled \"Base URL\" or \"API endpoint\". " +
+        "Paste your provider's API address: it is on their setup page, labelled \"Base URL\" or \"API endpoint\". " +
         "It looks like https://api.example.com/v1. A local server like Ollama uses http://localhost:11434/v1.",
       placeholder: "https://api.example.com/v1",
     })
@@ -248,12 +248,12 @@ async function wizardAdd(ctx: V2TuiContext): Promise<void> {
     await ctx.ui.dialog.alert({
       title: "That address could not be read",
       message:
-        "It must start with https:// (or http:// for a local server) and look like https://api.example.com/v1.\n\nNothing was saved — please try again.",
+        "It must start with https:// (or http:// for a local server) and look like https://api.example.com/v1.\n\nNothing was saved: please try again.",
     })
   }
 
   const flavor = await ctx.ui.dialog.select({
-    title: "Step 3 of 5 — API type",
+    title: "Step 3 of 5: API type",
     placeholder: "Pick the first one if you are unsure",
     options: FLAVOR_OPTIONS,
   })
@@ -262,13 +262,13 @@ async function wizardAdd(ctx: V2TuiContext): Promise<void> {
     return
   }
 
-  const apiKey = await askApiKey(ctx, "Step 4 of 5 — API key")
+  const apiKey = await askApiKey(ctx, "Step 4 of 5: API key")
   if (apiKey === undefined) {
     cancelled(ctx)
     return
   }
   const displayStyle = await ctx.ui.dialog.select({
-    title: "Step 5 of 5 — How should models appear in the model list?",
+    title: "Step 5 of 5: How should models appear in the model list?",
     options: SIMPLE_OPTIONS,
   })
   if (!displayStyle) {
@@ -371,7 +371,7 @@ async function wizardCatalogAdd(ctx: V2TuiContext): Promise<void> {
     title: "Which models? (optional)",
     description:
       "Type model names separated by commas, for example claude-sonnet-4-5, gpt-4o. " +
-      "Leave empty to add every model this provider offers — that is the safe choice.",
+      "Leave empty to add every model this provider offers: that is the safe choice.",
   })
   const apiKey = await askApiKey(ctx, "API key for this provider (paste it if you have one)")
   const { message } = await call<{ message: string }>(ctx, "catalog.add", {
@@ -488,8 +488,8 @@ async function wizardList(ctx: V2TuiContext): Promise<void> {
     ? providers
         .map(provider =>
           provider.models === 0
-            ? `${provider.id} — NOT READY (no models yet)\n  ${provider.baseURL}\n  Fix it with /edit-provider (check the URL and API key), then /reload-models`
-            : `${provider.id} — ${provider.models} model(s) ready${statusSuffix(provider)}\n  ${provider.baseURL}`,
+            ? `${provider.id}: NOT READY (no models yet)\n  ${provider.baseURL}\n  Fix it with /edit-provider (check the URL and API key), then /reload-models`
+            : `${provider.id}: ${provider.models} model(s) ready${statusSuffix(provider)}\n  ${provider.baseURL}`,
         )
         .join("\n\n")
     : "You have no custom providers yet. Run /add-provider to add your first one."

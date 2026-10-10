@@ -968,7 +968,7 @@ async function probeEndpointOutcome(baseURL, apiKey, flavor = DEFAULT_FLAVOR) {
     }
   }
   throw new Error(
-    `Probe failed for ${baseURL}` + (lastError ? `: ${lastError}` : ". No models found \u2014 retry or add models manually.")
+    `Probe failed for ${baseURL}` + (lastError ? `: ${lastError}` : ". No models found: retry or add models manually.")
   );
 }
 async function probeEndpoint(baseURL, apiKey, flavor = DEFAULT_FLAVOR) {
@@ -1905,7 +1905,7 @@ Technical detail: ${sanitizeErrorMessage(error)}`
         }
       } else {
         lines.push(
-          'No API key was given, so this provider may not be able to sign in. If it needs one, run /edit-provider and choose "API key" \u2014 nothing else has to be redone.'
+          'No API key was given, so this provider may not be able to sign in. If it needs one, run /edit-provider and choose "API key": nothing else has to be redone.'
         );
       }
       if (!input.apiKey) {
@@ -2211,7 +2211,7 @@ Fix with /edit-provider (check the address and the API key), then run /reload-mo
         );
       }
       if (outcome.updated.length === 0 && outcome.failed.length === 0 && outcome.empty.length === 0) {
-        lines.push("Nothing to change \u2014 every provider already lists the same models.");
+        lines.push("Nothing to change: every provider already lists the same models.");
       }
       return { message: lines.join("\n") };
     },
@@ -2504,7 +2504,7 @@ Technical detail: ${sanitizeErrorMessage(error)}`);
     });
     tools.add({
       name: "reprobe-models",
-      description: "Re-probe a provider's endpoint and list model changes (added, vanished, metadata updated). Read-only \u2014 apply-reconcile persists decisions. Defaults per row: changed/vanished \u2192 keep, new \u2192 apply.",
+      description: "Re-probe a provider's endpoint and list model changes (added, vanished, metadata updated). Read-only: apply-reconcile persists decisions. Defaults per row: changed/vanished \u2192 keep, new \u2192 apply.",
       input: {
         type: "object",
         properties: { providerId: { type: "string", description: "Which provider to check" } },
@@ -2701,7 +2701,7 @@ var server = async ({ client }) => {
         }
       }),
       "reprobe-models": tool({
-        description: "Re-probe a provider's endpoint and list model changes (added, updated with old -> new values, vanished). Read-only \u2014 call apply-reconcile with decisions to save.",
+        description: "Re-probe a provider's endpoint and list model changes (added, updated with old -> new values, vanished). Read-only: call apply-reconcile with decisions to save.",
         args: {
           providerId: tool.schema.string().describe("Provider ID to re-probe")
         },
@@ -2716,7 +2716,7 @@ var server = async ({ client }) => {
             return `Re-probe failed: ${sanitizeErrorMessage(error)}`;
           }
           if (rep.changes.length === 0) {
-            return `No changes for '${args.providerId}' \u2014 ${rep.fresh.length} model(s) already in sync.`;
+            return `No changes for '${args.providerId}': ${rep.fresh.length} model(s) already in sync.`;
           }
           const lines = [`${rep.changes.length} change(s) for '${args.providerId}':`];
           const freshById = new Map(rep.fresh.map((p) => [p.id, p]));
@@ -2792,7 +2792,7 @@ var server = async ({ client }) => {
             targetId = args.rename.trim();
             if (warning) notes.push(warning);
             if (args.apiKey === void 0) {
-              notes.push(`Stored credential (if any) is still keyed by '${oldId}' \u2014 pass apiKey to move it.`);
+              notes.push(`Stored credential (if any) is still keyed by '${oldId}': pass apiKey to move it.`);
             }
           }
           const entry = providers[targetId];

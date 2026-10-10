@@ -603,7 +603,7 @@ export const setup = async (ctx: V2Context): Promise<void> => {
       } else {
         lines.push(
           "No API key was given, so this provider may not be able to sign in. " +
-            "If it needs one, run /edit-provider and choose \"API key\" — nothing else has to be redone.",
+            "If it needs one, run /edit-provider and choose \"API key\": nothing else has to be redone.",
         )
       }
       // Without a key the provider is stored but unusable, so the first line must not read as
@@ -945,7 +945,7 @@ export const setup = async (ctx: V2Context): Promise<void> => {
         )
       }
       if (outcome.updated.length === 0 && outcome.failed.length === 0 && outcome.empty.length === 0) {
-        lines.push("Nothing to change — every provider already lists the same models.")
+        lines.push("Nothing to change: every provider already lists the same models.")
       }
       return { message: lines.join("\n") }
     },
@@ -1261,7 +1261,7 @@ export const setup = async (ctx: V2Context): Promise<void> => {
     tools.add({
       name: "reprobe-models",
       description:
-        "Re-probe a provider's endpoint and list model changes (added, vanished, metadata updated). Read-only — " +
+        "Re-probe a provider's endpoint and list model changes (added, vanished, metadata updated). Read-only: " +
         "apply-reconcile persists decisions. Defaults per row: changed/vanished → keep, new → apply.",
       input: {
         type: "object",

@@ -1,9 +1,9 @@
-# Interactive UI Primitives — `better-custom-provider@1.6.0`
+# Interactive UI Primitives: `better-custom-provider@1.6.0`
 
 Study of the mature competitor's interactive layer:
 
-- `ref/better-custom-main/src/ui/select.ts` — 404 lines: `selectOne`, `pickTriState`, `pickMany`
-- `ref/better-custom-main/src/ui/prompts.ts` — 301 lines: 10 prompt helpers built on top
+- `ref/better-custom-main/src/ui/select.ts`: 404 lines: `selectOne`, `pickTriState`, `pickMany`
+- `ref/better-custom-main/src/ui/prompts.ts`: 301 lines: 10 prompt helpers built on top
 
 All three pickers are **not** primitives from the host. Each is a hand-rolled
 `ctx.ui.custom((tui, theme, _kb, done) => ({ render, invalidate, handleInput }))`
@@ -12,11 +12,11 @@ component over `@mariozechner/pi-tui`, sharing one design: a bordered box, a
 
 ---
 
-## 1. The tri-state picker (`pickTriState`) — the reconciler
+## 1. The tri-state picker (`pickTriState`): the reconciler
 
 ### What it is
 
-`select.ts:145` — the only picker with **three** states per row instead of two.
+`select.ts:145`: the only picker with **three** states per row instead of two.
 It is the surface used by *Re-probe* (`flows/edit.ts:648`) to reconcile a live
 `/models` response against what is already stored in `models.json`.
 
@@ -31,7 +31,7 @@ export async function pickTriState(
 
 It returns a `Map<string, TriState>`, or `null` on ESC.
 
-### The state type — the caller decides the meaning
+### The state type: the caller decides the meaning
 
 ```ts
 export type TriState = "off" | "mid" | "on";
@@ -64,9 +64,9 @@ function box(s: TriState): string {
 
 | glyph | state | color | meaning at the Re-probe call site |
 |---|---|---|---|
-| `[x]` | `on` | `success` (green) | **apply** — keep/add and write the latest probed metadata |
-| `[-]` | `mid` | `warning` (yellow) | **keep** — leave the stored entry untouched, ignore the diff |
-| `[ ]` | `off` | `muted` (grey) | **remove/skip** — delete it, or don't add it |
+| `[x]` | `on` | `success` (green) | **apply** : keep/add and write the latest probed metadata |
+| `[-]` | `mid` | `warning` (yellow) | **keep** : leave the stored entry untouched, ignore the diff |
+| `[ ]` | `off` | `muted` (grey) | **remove/skip** : delete it, or don't add it |
 
 ### The real legend strings (verbatim, `select.ts:149`, `:220`, `:221`)
 
@@ -145,7 +145,7 @@ Behaviour, all of it **verified by driving the real source**:
 
 - **↑ / ↓** move the cursor and **wrap** at both ends (index 0 → last, last → 0).
 - **Space** cycles the row through *its own* `states` array, modulo length.
-- **Enter** resolves with a **copy** of the state map — `done(new Map(state))`.
+- **Enter** resolves with a **copy** of the state map: `done(new Map(state))`.
 - **ESC** resolves `null`.
 - Any other printable char (`data >= " "`) appends to `query` and **resets
   `cursor = 0`** so the first match is always preselected.
@@ -161,7 +161,7 @@ Driving the real component with the call site's own `states: ["off","mid","on"]`
 ```
 
 Because `states` is `["off","mid","on"]`, one Space from `mid` lands on **`on`**
-(apply), not on `off` (remove). The destructive state is *last* in the cycle —
+(apply), not on `off` (remove). The destructive state is *last* in the cycle: 
 you cannot reach "remove" by mashing Space once.
 
 ### Per-row state assignment at the Re-probe call site (`flows/edit.ts:603-646`)
@@ -173,7 +173,7 @@ classes of row, each with its own `states` and `initial`:
 |---|---|---|---|
 | **changed** (stored model with a real diff) | `["off","mid","on"]` | `"mid"` | A decision is needed → `mid` = safe "do nothing" |
 | **new** (`novelIds`, not in config) | `["off","on"]` | `"off"` | Nothing stored, so "keep without update" is meaningless; default is *don't add* |
-| **unsupported** (vanished from `/models`) | `["off","on"]` | `"on"` | Default is *keep* — a probe gap must not delete your config |
+| **unsupported** (vanished from `/models`) | `["off","on"]` | `"on"` | Default is *keep* : a probe gap must not delete your config |
 | **untouched** (in config, no diff) | `["off","on"]` | `"on"` | Default is *keep* |
 
 Consumption (`edit.ts:651-660`) confirms the three buckets:
@@ -193,7 +193,7 @@ unreachable because it is not in `states`.
 
 ### Search and scrolling
 
-Search haystack (`select.ts:161-168`) — four fields OR-ed together:
+Search haystack (`select.ts:161-168`): four fields OR-ed together:
 
 ```ts
 const haystack = `${item.label} ${item.value} ${item.description ?? ""} ${item.searchText ?? ""}`.toLowerCase();
@@ -242,12 +242,12 @@ Legend (`:82`):
  Type to search • ↑↓ move (wraps) • enter confirm • backspace delete • esc cancel
 ```
 
-Note: **no `space toggle`** — this is the only legend of the three without it.
+Note: **no `space toggle`**: this is the only legend of the three without it.
 
 Two rendering behaviours `pickTriState` does **not** have:
 
-1. **`suffix`** — a right-hand value column, e.g. `Reasoning • xhigh`.
-2. **Multi-line `description`** — split on `\n` and emitted as indented
+1. **`suffix`**: a right-hand value column, e.g. `Reasoning • xhigh`.
+2. **Multi-line `description`**: split on `\n` and emitted as indented
    `muted` lines under the row (`:69-71`):
 
 ```ts
@@ -277,15 +277,15 @@ Plain two-state multi-select over `ProbeItem[]`, returning `string[] | null`.
 add(` ${theme.fg("muted", `${selected.size} selected • ${visibleItems.length}/${items.length} shown`)}`);
 ```
 
-- **Guard**: Enter is a no-op with nothing selected (`:382`) —
-  `if (selected.size > 0) done(Array.from(selected));` — with a warning line
+- **Guard**: Enter is a no-op with nothing selected (`:382`): 
+  `if (selected.size > 0) done(Array.from(selected));`: with a warning line
   rendered until then (`:349`):
 
 ```
  Select at least one model before confirming.
 ```
 
-- Search haystack: `label + value + description` — **no `searchText` field**
+- Search haystack: `label + value + description`: **no `searchText` field**
   (`ProbeItem` has none, unlike `SelectItem`/`TriItem`).
 
 Used for the *add* flow (`flows/add.ts:105`, `:192`), where there is no prior
@@ -302,19 +302,19 @@ All are `async`, return `null`/`undefined` on cancel, and are composed from
 |---|---|---|---|
 | `promptApiKey` | 8 | `selectOne` "API key": `API key` (stored in auth.json, like pi's own /login credentials) / `None` (no key; a placeholder is written so the provider still loads). If `API key` → `ctx.ui.input("API key", "saved in auth.json under the provider id")`. Blank input degrades to `{mode:"none"}`. | `{mode:"literal", value?}` \| `{mode:"none"}` \| `null` |
 | `promptReasoning` | 33 | `selectOne` "Reasoning" over `REASONING_LEVELS` = `off, minimal, low, medium, high, xhigh, max`, with `initialIndex` parked on the current value. Labels are self-describing: `Off - no reasoning`, `xhigh - maximum (only if the model supports it)`, else `` `${level} - cap reasoning at ${level}` `` | `ReasoningCeiling \| null` |
-| `promptCeilingProviderString` | 45 | `ctx.ui.input(`${level} provider value (blank = ${level})`, ...)` — optional override for the provider-facing string when a model is capped at `xhigh`/`max` (some providers name it `max`) | `string \| undefined` |
+| `promptCeilingProviderString` | 45 | `ctx.ui.input(`${level} provider value (blank = ${level})`, ...)` : optional override for the provider-facing string when a model is capped at `xhigh`/`max` (some providers name it `max`) | `string \| undefined` |
 | `promptImage` | 55 | `selectOne` "Image input": `Yes - send text + images` (sets `input: [text, image]`) / `No - text only` (sets `input: [text]`); `initialIndex: 1` when current is `false` | `boolean \| null` |
 | `promptContextWindow` | 68 | `ctx.ui.input("Context window (tokens)", current ? \`current: ${current} (blank = keep, 0 = clear)\` : "e.g. 128000 (blank = unset)")`. Strips `_`/`,` before `parseInt`. Bad input → `notify("Enter a whole number of tokens (0 to clear).", "warning")` and `null`. | `number` (0 = clear) \| `null` (keep/cancel) |
 | `promptMaxTokens` | 86 | Same contract as above with "Max output tokens", placeholder `e.g. 8192 (blank = unset)` | `number` (0 = clear) \| `null` |
-| `promptManualModels` | 108 | Loop: `ctx.ui.input(ids.length === 0 ? "Model id" : "Add another model id", placeholder)`. Placeholder is style-aware (`e.g. claude-sonnet-4-5`, `e.g. llama3.1:8b or qwen2.5-coder:7b`, `e.g. gemini-2.5-pro`, else `e.g. gpt-4o-mini or qwen/qwen3-coder`) — all ending `blank or esc to finish`. Each accepted id then enters a **per-model `selectOne` menu**: `Reasoning`, `Image input`, `Context window`, `Max output tokens`, `Done`, each row showing its live value via `suffix`. Duplicate id → `notify(\`Model already added: ${id}\`, "warning")`. | `{ids, options: Map<string, ModelOptions>} \| null` |
+| `promptManualModels` | 108 | Loop: `ctx.ui.input(ids.length === 0 ? "Model id" : "Add another model id", placeholder)`. Placeholder is style-aware (`e.g. claude-sonnet-4-5`, `e.g. llama3.1:8b or qwen2.5-coder:7b`, `e.g. gemini-2.5-pro`, else `e.g. gpt-4o-mini or qwen/qwen3-coder`) : all ending `blank or esc to finish`. Each accepted id then enters a **per-model `selectOne` menu**: `Reasoning`, `Image input`, `Context window`, `Max output tokens`, `Done`, each row showing its live value via `suffix`. Duplicate id → `notify(\`Model already added: ${id}\`, "warning")`. | `{ids, options: Map<string, ModelOptions>} \| null` |
 | `promptProviderStyle` | 182 | `selectOne` "Provider style": OpenAI-compatible (Chat Completions) / OpenAI Responses API / Anthropic-compatible / Gemini (Google generative AI) / Ollama-compatible, each with a `description` naming the exact `api:` value written | `{style, api} \| null` |
-| `promptEndpoint` | 206 | `ctx.ui.input("Endpoint", style-aware example)` — `https://api.anthropic-proxy.com/v1`, `http://localhost:11434/v1`, `https://generativelanguage.googleapis.com/v1beta`, `https://api.openai.com/v1`, else `https://api.example.com/v1 or http://localhost:11434/v1`. Empty → `notify("Endpoint is required.", "error")`. Invalid → `notify(\`Invalid endpoint: ...\`, "error")` | `{normalized, raw} \| null` |
+| `promptEndpoint` | 206 | `ctx.ui.input("Endpoint", style-aware example)` : `https://api.anthropic-proxy.com/v1`, `http://localhost:11434/v1`, `https://generativelanguage.googleapis.com/v1beta`, `https://api.openai.com/v1`, else `https://api.example.com/v1 or http://localhost:11434/v1`. Empty → `notify("Endpoint is required.", "error")`. Invalid → `notify(\`Invalid endpoint: ...\`, "error")` | `{normalized, raw} \| null` |
 | `promptProviderId` | 238 | `ctx.ui.input(\`Provider name (blank = ${suggestion})\`, "e.g. custom-example-com")`, or `Provider name (must be unique)` when the suggestion is taken. Re-prompts on collision with an existing id; refuses built-in ids via `resolveBuiltinCollision`. Blank accepts the suggestion. | `string \| null` |
-| `resolveBuiltinCollision` | 283 | `selectOne` `` `"${providerId}" collides with a built-in provider` ``: `Use "<id>-custom" instead` (recommended — models and key stay separate) / `Keep "<id>"` (extend the built-in on purpose, shows `BUILTIN_COLLISION_WARNING`) / `Pick another name` | the id to use, or `null` to re-prompt |
+| `resolveBuiltinCollision` | 283 | `selectOne` `` `"${providerId}" collides with a built-in provider` ``: `Use "<id>-custom" instead` (recommended : models and key stay separate) / `Keep "<id>"` (extend the built-in on purpose, shows `BUILTIN_COLLISION_WARNING`) / `Pick another name` | the id to use, or `null` to re-prompt |
 
 Two contract patterns worth copying:
 
-- **0 = clear, blank = keep, null = cancel** for numeric prompts — one prompt
+- **0 = clear, blank = keep, null = cancel** for numeric prompts: one prompt
   expresses three intents without a confirm dialog.
 - **Uniqueness is enforced at prompt time, never by overwrite.** `promptProviderId`
   loops rather than clobbering, and `persistProvider` re-checks and *refuses*
@@ -327,11 +327,11 @@ Two contract patterns worth copying:
 Six mechanisms, all verified against a real 400-model list:
 
 1. **12-row window** (`maxVisible = 12`). The frame is a constant ~23 lines
-   regardless of list size — measured 23 lines for 400 models.
+   regardless of list size: measured 23 lines for 400 models.
 2. **Centred scroll**: `start = clamp(cursor - 6, 0, len - 12)`, so the cursor
    sits mid-window and you always see context above and below. After 50× ↓ the
    footer reads ` 45-56 of 400`.
-3. **Position footer**: ` ${start+1}-${end} of ${visibleItems.length}` — the
+3. **Position footer**: ` ${start+1}-${end} of ${visibleItems.length}`: the
    only signal that the list is longer than the window, and it reflects the
    *filtered* count.
 4. **Live type-to-search** narrowing on `label + value + description + searchText`,
@@ -339,7 +339,7 @@ Six mechanisms, all verified against a real 400-model list:
    Typing `137` in the 400-model list reduces it to one row: `> [-] model-137 context 128000`.
 5. **Semantic `searchText` tags** (`updated` / `new` / `unsupported`) turning the
    search box into a category filter.
-6. **Wrapping arrows** — ↓ on the last row returns to the first, so no dead end.
+6. **Wrapping arrows**: ↓ on the last row returns to the first, so no dead end.
 
 Because all 400 rows default to `mid` and Enter commits the whole map, the
 default action on a huge list is **safe**: 400/400 stay `mid`, 0 forced to `on`
@@ -361,15 +361,15 @@ depending on the row, and the destructive reading is always one keystroke away.
 `pickTriState` fixes this structurally:
 
 1. **It separates "keep" from "update".** A yes/no list forces "do you want
-   this model?" — but for a *changed* row the real question is "do you want the
+   this model?": but for a *changed* row the real question is "do you want the
    *new metadata*?" Those are different questions with different blast radius.
    `[x]` = apply the diff, `[-]` = keep the model, ignore the diff, `[ ]` = drop
    the model. Only three states can express all three.
 
 2. **The safe option is the default, and it is a distinct state.** Changed rows
    start at `mid`. A yes/no list must default either to "yes, overwrite" (data
-   loss) or "no, remove" (data loss). `mid` means *leave my config alone* — the
-   genuinely non-destructive choice — and it is what you get by pressing Enter
+   loss) or "no, remove" (data loss). `mid` means *leave my config alone*: the
+   genuinely non-destructive choice: and it is what you get by pressing Enter
    without reading anything.
 
 3. **Destruction is never one accidental keystroke away.** `states` is
@@ -378,14 +378,14 @@ depending on the row, and the destructive reading is always one keystroke away.
    toggle, every Space press is a coin flip between keep and delete.
 
 4. **Per-row `states` means no meaningless options.** New models get
-   `["off","on"]` — "keep without update" is nonsense for something not in your
+   `["off","on"]`: "keep without update" is nonsense for something not in your
    config. Unsupported models get `["off","on"]` with `initial: "on"`, so a
    probe gap defaults to *keeping* your config. One widget, three honest
    menus; a yes/no list would have to offer a state that does nothing and hope
    the user infers it.
 
 5. **It turns a review into a single pass.** The diff is rendered inline next to
-   the current value — `context 128000→1000000 · current: context 128000` — so
+   the current value, `context 128000→1000000 · current: context 128000`, so
    the decision and its evidence are on one line, and Enter commits
    add/remove/update in one write. A yes/no flow needs a second confirmation
    dialog per changed model.
@@ -396,7 +396,7 @@ depending on the row, and the destructive reading is always one keystroke away.
 
 In short: reconciling is a **three-way decision per row** (apply / keep / drop).
 A two-state widget cannot represent it, so it either conflates two meanings into
-one checkbox or pushes the third case into a separate confirmation — and both
+one checkbox or pushes the third case into a separate confirmation: and both
 of those make the destructive choice easier to reach by accident.
 
 ---
@@ -404,7 +404,7 @@ of those make the destructive choice easier to reach by accident.
 ## 7. Defect found while verifying: `pickTriState` ignores the Backspace key
 
 Discovered by driving the real source, reproduced in a real terminal. This is
-not a doc-writing issue — it is a live bug in the competitor's code.
+not a doc-writing issue: it is a live bug in the competitor's code.
 
 `selectOne` (`:114`) and `pickMany` (`:389`) both test the **escape sequence**:
 
@@ -428,7 +428,7 @@ if (data >= " " && data !== "001b" && ...)
 matches the byte a real terminal sends for Backspace. Verified with
 `"\u007f" === "007f" -> false`.
 
-Consequence — 0x7f is a printable-ish char (`127 >= 32`), so it **falls through
+Consequence: 0x7f is a printable-ish char (`127 >= 32`), so it **falls through
 to the append branch and is added to the query as an invisible character**:
 
 ```
@@ -450,27 +450,27 @@ pickTriState: "abc" --0x7f--> [a b c 0x7f]  *** BROKEN ***
 Real-terminal reproduction (tmux, `BSpace` confirmed to emit `0x7f`):
 
 - type `gpt` → 2 rows shown
-- press **Backspace** → ` No matching models.` — the invisible 0x7f poisoned
+- press **Backspace** → ` No matching models.`: the invisible 0x7f poisoned
   the query, and every row disappeared
-- press **Ctrl-H** (0x08) → `Search: gp` — the only working delete
+- press **Ctrl-H** (0x08) → `Search: gp`: the only working delete
 
 So in `pickTriState`, Backspace **corrupts** the search instead of editing it,
 and the user's only recovery is Ctrl-H. This hits precisely the surface where
-search matters most — the long reconcile list — and the advertised legend
+search matters most, the long reconcile list, and the advertised legend
 `backspace delete` is wrong there.
 
 ---
 
-## Appendix — verification method
+## Appendix: verification method
 
 Real source, not paraphrase. `src/ui/select.ts` was copied byte-identically
 (md5 `b590e46a68aef6da15a6ff2dce841a95`, `diff` clean vs the original) into a
 harness and driven two ways:
 
-1. **Headless** — real `select.ts` against the real
+1. **Headless**: real `select.ts` against the real
    `@mariozechner/pi-tui@0.73.1` (`matchesKey`, `Key`, `truncateToWidth`),
    sending real keystroke bytes and asserting on real return values.
-2. **Real TTY** — the same component run inside tmux with raw stdin and real
+2. **Real TTY**: the same component run inside tmux with raw stdin and real
    SGR colour output, driven with real keys (`Space`, `Down`, `BSpace`, `Enter`).
 
 tmux byte-probe confirming the key→byte mapping used above:

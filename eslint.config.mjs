@@ -14,7 +14,7 @@ export default tseslint.config(
         "error",
         {
           selector: "TSAsExpression[typeAnnotation.type='TSNeverKeyword']",
-          message: "Do not cast to `never` — it silences client shape mismatches. Put the single documented cast in src/opencode-client.ts instead.",
+          message: "Do not cast to `never`: it silences client shape mismatches. Put the single documented cast in src/opencode-client.ts instead.",
         },
       ],
     },

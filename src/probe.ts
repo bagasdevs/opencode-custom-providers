@@ -9,7 +9,7 @@ import type { DisplayStyle, EnrichedModel } from "./enrich.js"
 // Tiered resolution: detected > models.dev > local-rules > api-fallback > default.
 // Cost is only ever taken from detected data or models.dev.
 //
-// Non-goals, kept out on purpose (not oversights — do not add them here):
+// Non-goals, kept out on purpose (not oversights, so do not add them here):
 // per-model HTTP headers / per-model baseURL override, $ENV and !command auth
 // serialization, models.yml runtime selection, video-input display.
 
@@ -317,8 +317,8 @@ function modelsUrlFor(candidate: string, flavor: ProviderFlavor): string {
 
 /** The winning candidate is the variant that actually answered, so the
  * caller can store that URL instead of re-guessing `/v1` on every re-probe.
- * `listUnsupported` is the distinct third outcome — the flavor exposes no model
- * list at all — which must not be folded into "it answered but listed nothing". */
+ * `listUnsupported` is the distinct third outcome: the flavor exposes no model
+ * list at all, which must not be folded into "it answered but listed nothing". */
 export interface ProbeOutcome {
   models: ProbedModel[]
   baseURL: string
@@ -368,7 +368,7 @@ export async function probeEndpointOutcome(
     }
   }
   throw new Error(
-    `Probe failed for ${baseURL}` + (lastError ? `: ${lastError}` : ". No models found — retry or add models manually."),
+    `Probe failed for ${baseURL}` + (lastError ? `: ${lastError}` : ". No models found: retry or add models manually."),
   )
 }
 

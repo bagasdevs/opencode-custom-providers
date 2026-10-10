@@ -158,7 +158,7 @@ function done(ctx, message) {
   ctx.ui.toast.show({ title: "Custom providers", message, variant: "success" });
 }
 function statusSuffix(provider) {
-  return provider.pending > 0 ? ` (${provider.pending} new model(s) found \u2014 run /reload-models to add them)` : "";
+  return provider.pending > 0 ? ` (${provider.pending} new model(s) found: run /reload-models to add them)` : "";
 }
 function cancelled(ctx) {
   ctx.ui.toast.show({ title: "Custom providers", message: "Cancelled. Nothing was changed.", variant: "info" });
@@ -177,7 +177,7 @@ async function pickProvider(ctx) {
     options: providers.map((provider) => ({
       title: provider.id,
       value: provider.id,
-      description: `${provider.baseURL} \u2014 ${provider.models} model(s)${statusSuffix(provider)}`
+      description: `${provider.baseURL}: ${provider.models} model(s)${statusSuffix(provider)}`
     }))
   });
   if (!selected) cancelled(ctx);
@@ -186,7 +186,7 @@ async function pickProvider(ctx) {
 async function askApiKey(ctx, title) {
   return ctx.ui.dialog.prompt({
     title,
-    description: "Paste the key you got from your provider (it often starts with sk-). Most providers need one. It is saved in opencode's secure key store, never shown again, and you can replace it any time with /edit-provider. Leave empty only for local servers like Ollama. Press Esc to cancel \u2014 nothing is saved until the last step."
+    description: "Paste the key you got from your provider (it often starts with sk-). Most providers need one. It is saved in opencode's secure key store, never shown again, and you can replace it any time with /edit-provider. Leave empty only for local servers like Ollama. Press Esc to cancel: nothing is saved until the last step."
   });
 }
 async function promptManualAdd(ctx, input, providerId) {
@@ -221,7 +221,7 @@ function repairBaseURL(raw) {
 }
 async function wizardAdd(ctx) {
   let providerId = await ctx.ui.dialog.prompt({
-    title: "Step 1 of 5 \u2014 Name for this provider",
+    title: "Step 1 of 5: Name for this provider",
     description: "Any short name you will recognise later. Letters, numbers, hyphens and underscores only. Example: my-proxy",
     placeholder: "my-proxy"
   });
@@ -233,7 +233,7 @@ async function wizardAdd(ctx) {
   if (!ID_PATTERN.test(providerId)) {
     fail(
       ctx,
-      `'${providerId}' cannot be used as a name. Use only letters, numbers, hyphens and underscores \u2014 for example my-proxy. Run /add-provider to start again.`
+      `'${providerId}' cannot be used as a name. Use only letters, numbers, hyphens and underscores: for example my-proxy. Run /add-provider to start again.`
     );
     return;
   }
@@ -269,8 +269,8 @@ Replace it?`,
   let baseURL;
   for (; ; ) {
     baseURL = await ctx.ui.dialog.prompt({
-      title: "Step 2 of 5 \u2014 Base URL",
-      description: `Paste your provider's API address \u2014 it is on their setup page, labelled "Base URL" or "API endpoint". It looks like https://api.example.com/v1. A local server like Ollama uses http://localhost:11434/v1.`,
+      title: "Step 2 of 5: Base URL",
+      description: `Paste your provider's API address: it is on their setup page, labelled "Base URL" or "API endpoint". It looks like https://api.example.com/v1. A local server like Ollama uses http://localhost:11434/v1.`,
       placeholder: "https://api.example.com/v1"
     });
     if (!baseURL) {
@@ -295,11 +295,11 @@ Use '${repaired}' instead?`,
     if (isValidUrl(baseURL)) break;
     await ctx.ui.dialog.alert({
       title: "That address could not be read",
-      message: "It must start with https:// (or http:// for a local server) and look like https://api.example.com/v1.\n\nNothing was saved \u2014 please try again."
+      message: "It must start with https:// (or http:// for a local server) and look like https://api.example.com/v1.\n\nNothing was saved: please try again."
     });
   }
   const flavor = await ctx.ui.dialog.select({
-    title: "Step 3 of 5 \u2014 API type",
+    title: "Step 3 of 5: API type",
     placeholder: "Pick the first one if you are unsure",
     options: FLAVOR_OPTIONS
   });
@@ -307,13 +307,13 @@ Use '${repaired}' instead?`,
     cancelled(ctx);
     return;
   }
-  const apiKey = await askApiKey(ctx, "Step 4 of 5 \u2014 API key");
+  const apiKey = await askApiKey(ctx, "Step 4 of 5: API key");
   if (apiKey === void 0) {
     cancelled(ctx);
     return;
   }
   const displayStyle = await ctx.ui.dialog.select({
-    title: "Step 5 of 5 \u2014 How should models appear in the model list?",
+    title: "Step 5 of 5: How should models appear in the model list?",
     options: SIMPLE_OPTIONS
   });
   if (!displayStyle) {
@@ -409,7 +409,7 @@ async function wizardCatalogAdd(ctx) {
   }
   const models = await ctx.ui.dialog.prompt({
     title: "Which models? (optional)",
-    description: "Type model names separated by commas, for example claude-sonnet-4-5, gpt-4o. Leave empty to add every model this provider offers \u2014 that is the safe choice."
+    description: "Type model names separated by commas, for example claude-sonnet-4-5, gpt-4o. Leave empty to add every model this provider offers: that is the safe choice."
   });
   const apiKey = await askApiKey(ctx, "API key for this provider (paste it if you have one)");
   const { message } = await call(ctx, "catalog.add", {
@@ -518,9 +518,9 @@ async function wizardRefresh(ctx) {
 async function wizardList(ctx) {
   const { providers } = await call(ctx, "list");
   const message = providers.length ? providers.map(
-    (provider) => provider.models === 0 ? `${provider.id} \u2014 NOT READY (no models yet)
+    (provider) => provider.models === 0 ? `${provider.id}: NOT READY (no models yet)
   ${provider.baseURL}
-  Fix it with /edit-provider (check the URL and API key), then /reload-models` : `${provider.id} \u2014 ${provider.models} model(s) ready${statusSuffix(provider)}
+  Fix it with /edit-provider (check the URL and API key), then /reload-models` : `${provider.id}: ${provider.models} model(s) ready${statusSuffix(provider)}
   ${provider.baseURL}`
   ).join("\n\n") : "You have no custom providers yet. Run /add-provider to add your first one.";
   await ctx.ui.dialog.alert({ title: "Your custom providers", message });
@@ -1375,7 +1375,7 @@ async function probeEndpointOutcome(baseURL, apiKey, flavor = DEFAULT_FLAVOR) {
     }
   }
   throw new Error(
-    `Probe failed for ${baseURL}` + (lastError ? `: ${lastError}` : ". No models found \u2014 retry or add models manually.")
+    `Probe failed for ${baseURL}` + (lastError ? `: ${lastError}` : ". No models found: retry or add models manually.")
   );
 }
 async function probeEndpoint(baseURL, apiKey, flavor = DEFAULT_FLAVOR) {
@@ -2313,7 +2313,7 @@ ${describeProbed(fresh)}` : "";
           await save();
           api.ui.toast({ message: `Renamed to '${finalId}'.`, variant: "success" });
           if (warning) api.ui.toast({ message: warning, variant: "warning" });
-          api.ui.toast({ message: "Stored credential (if any) is still keyed by the old id \u2014 re-enter it via Edit Provider \u2192 API key.", variant: "warning" });
+          api.ui.toast({ message: "Stored credential (if any) is still keyed by the old id: re-enter it via Edit Provider \u2192 API key.", variant: "warning" });
           return;
         }
         if (action === "endpoint") {

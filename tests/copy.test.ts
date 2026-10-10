@@ -24,7 +24,7 @@ describe("user-facing wording", () => {
       for (const retired of RETIRED_PHRASES) {
         expect(
           text,
-          `${file} still says "${String(retired)}". Use "${LOCAL_TERM}" instead — the earlier ` +
+          `${file} still says "${String(retired)}". Use "${LOCAL_TERM}" instead: the earlier ` +
             `phrasings described the same thing in three different ways and readers could not tell ` +
             `whether they meant the same setup step.`,
         ).not.toMatch(retired)
@@ -51,7 +51,7 @@ describe("user-facing wording", () => {
         expect(
           description,
           `${file} has a newline in a description: "${description.slice(0, 60)}". The host renders ` +
-            `description on a single line, so the newline does not break the text — it only joins ` +
+            `description on a single line, so the newline does not break the text: it only joins ` +
             `two sentences into a run-on. Use a shorter sentence, or move the paragraph to message.`,
         ).not.toContain("\\n")
       }

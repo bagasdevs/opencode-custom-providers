@@ -214,7 +214,7 @@ export const server: Plugin = async ({ client }) => {
 
       "reprobe-models": tool({
         description:
-          "Re-probe a provider's endpoint and list model changes (added, updated with old -> new values, vanished). Read-only — call apply-reconcile with decisions to save.",
+          "Re-probe a provider's endpoint and list model changes (added, updated with old -> new values, vanished). Read-only: call apply-reconcile with decisions to save.",
         args: {
           providerId: tool.schema.string().describe("Provider ID to re-probe"),
         },
@@ -230,7 +230,7 @@ export const server: Plugin = async ({ client }) => {
             return `Re-probe failed: ${sanitizeErrorMessage(error)}`
           }
           if (rep.changes.length === 0) {
-            return `No changes for '${args.providerId}' — ${rep.fresh.length} model(s) already in sync.`
+            return `No changes for '${args.providerId}': ${rep.fresh.length} model(s) already in sync.`
           }
           const lines = [`${rep.changes.length} change(s) for '${args.providerId}':`]
           const freshById = new Map(rep.fresh.map(p => [p.id, p]))
@@ -322,7 +322,7 @@ export const server: Plugin = async ({ client }) => {
             targetId = args.rename.trim()
             if (warning) notes.push(warning)
             if (args.apiKey === undefined) {
-              notes.push(`Stored credential (if any) is still keyed by '${oldId}' — pass apiKey to move it.`)
+              notes.push(`Stored credential (if any) is still keyed by '${oldId}': pass apiKey to move it.`)
             }
           }
           const entry = providers[targetId]

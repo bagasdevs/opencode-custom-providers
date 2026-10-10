@@ -49,7 +49,7 @@ Models are discovered and enriched automatically.
 ## Commands
 
 Slash commands are what you type; agent tools are what the model calls. They are separate
-namespaces — an agent tool never appears in the palette, and a slash command is never callable
+namespaces: an agent tool never appears in the palette, and a slash command is never callable
 by the model.
 
 ### TUI slash commands
@@ -78,14 +78,14 @@ the catalog and reconcile flows live inside its own wizards instead.
 | `add-provider` | `add-provider` | Add a provider by probing its endpoint |
 | `add-from-catalog` | `add-from-catalog` | Add a provider from the models.dev catalog (no probing) |
 | `list-catalog-sites` | `list-catalog-sites` | List catalog sites to pick from |
-| — | `manual-add-models` | Add model ids by hand when an endpoint cannot list them |
-| — | `list-custom-providers` | List configured providers and their models |
+| : | `manual-add-models` | Add model ids by hand when an endpoint cannot list them |
+| : | `list-custom-providers` | List configured providers and their models |
 | `reprobe-models` | `reprobe-models` | Re-probe one provider and list model changes |
 | `apply-reconcile` | `apply-reconcile` | Persist reconcile decisions |
 | `refresh-models` | `refresh-models` | Re-discover models for every provider |
-| `edit-provider` | — | Edit an existing provider |
+| `edit-provider` | : | Edit an existing provider |
 | `delete-provider` | `delete-provider` | Remove a provider |
-| `delete-models` | — | Remove individual models |
+| `delete-models` | : | Remove individual models |
 
 ## Configuration
 

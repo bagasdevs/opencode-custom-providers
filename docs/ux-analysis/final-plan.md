@@ -1,4 +1,4 @@
-# Final Plan — making `opencode-custom-providers` beginner-friendly
+# Final Plan: making `opencode-custom-providers` beginner-friendly
 
 One ordered list, grouped **Blocker > Major > Minor**. Every item names `our file:line`, the **exact current text**, the **exact replacement**, and **why** (one line).
 
@@ -6,7 +6,7 @@ Sources merged: `C:/Users/Administrator/AppData/Local/Temp/ocp-ux/join-experienc
 
 Convention: quoted `current:` blocks reproduce the source text exactly; inside a markdown list item the block's leading indentation is normalised (TypeScript is whitespace-insensitive), and every token is otherwise byte-identical to the working tree. Verified by the audit transcripts in §Evidence, which report 0 textual differences after whitespace normalisation.
 
-Grounding: every `file:line` below was read from the working tree on 2026-10-10 and every behavioural claim was reproduced against the real compiled plugin surface (`dist/`, identical to `src/` on every cited anchor) — see the verification transcripts listed in §Evidence.
+Grounding: every `file:line` below was read from the working tree on 2026-10-10 and every behavioural claim was reproduced against the real compiled plugin surface (`dist/`, identical to `src/` on every cited anchor): see the verification transcripts listed in §Evidence.
 
 **Reading order:** B1–B7 are the "beginner is stuck or silently loses work" set. M1–M11 are "misled / degraded". m1–m8 are polish and defensive notes.
 
@@ -15,7 +15,7 @@ Grounding: every `file:line` below was read from the working tree on 2026-10-10 
 ## Blocker
 
 ### B1. A failed or empty probe must offer Retry / Add manually / Cancel instead of a dead-end alert
-- **Merged from:** J3 + J12 + G1 + G13 + G12(4) — one recovery surface for all four probe outcomes.
+- **Merged from:** J3 + J12 + G1 + G13 + G12(4): one recovery surface for all four probe outcomes.
 - **`src/tui-v2.ts:225-232`**
   - current:
     ```ts
@@ -37,21 +37,21 @@ Grounding: every `file:line` below was read from the working tree on 2026-10-10 
   - replacement: `return { status: "unreachable", message: \`Nothing was saved: the address ${candidate.baseURL} did not answer with a model list.\n${probeHint(error)}\` }` and move the raw detail to a `detail` field the TUI shows only under "Technical detail (for bug reports)".
 - **`src/server-v2.ts:448-456`**
   - current: the `'…' was saved, but it did not return any models yet …` block listing `/edit-provider` → `/reload-models`.
-  - replacement: `return { status: "manual_required", message: \`The address answered, but it listed no models. You can type the model names yourself.\` }` — and delete the "run /reload-models to try again" advice, which cannot succeed while the endpoint lists nothing.
+  - replacement: `return { status: "manual_required", message: \`The address answered, but it listed no models. You can type the model names yourself.\` }`: and delete the "run /reload-models to try again" advice, which cannot succeed while the endpoint lists nothing.
 - **Why:** a wrong URL, a missing `/v1`, or a key-gated `/models` is the most common first-run failure and today the wizard ends in an alert with no way forward except restarting from Step 1.
-- **Evidence:** T1 (401 → alert, no recovery menu), T2 (0 models → same dead end), G3 (d) — the zero-model guidance block is unreachable for listable flavors because `probeEndpoint` throws first; it is only reachable via `flavor=anthropic`, where the advice ("ends in /v1") is wrong.
+- **Evidence:** T1 (401 → alert, no recovery menu), T2 (0 models → same dead end), G3 (d): the zero-model guidance block is unreachable for listable flavors because `probeEndpoint` throws first; it is only reachable via `flavor=anthropic`, where the advice ("ends in /v1") is wrong.
 
 ### B2. Manual model entry must exist in v2 at all
-- **Merged from:** G1(2) + J3(1b) + G10(1) — one RPC that writes a provider without a successful probe.
+- **Merged from:** G1(2) + J3(1b) + G10(1): one RPC that writes a provider without a successful probe.
 - **`src/server-v2.ts:401-473`** (the `add` op)
   - current: `add` is the only creation path and it always requires `await discover(candidate)` to succeed.
   - replacement: add a sibling op
     ```ts
     manualAdd: async (input: { providerId: string; baseURL: string; modelIds: string; flavor?: string; displayStyle?: DisplayStyle }): Promise<{ status: string; message: string }> => { /* validate id + url + collision, then: */ const previews = await previewManualModels(ids, flavor, displayStyle); /* managed.set + persist + registerIntegration + applyModels(providerId, previews.map(p => p.probed), displayStyle) */ }
     ```
-    reusing `previewManualModels` (`src/probe.ts:468-486`), which resolves hand-typed ids against the local rules and the models.dev lookup with no endpoint traffic, exactly as v1 does at `src/tui.ts:571-604`. Note the contract at `src/probe.ts:472-475`: an omitted id list means "all models", and an explicitly empty one must be rejected by the caller — `manualAdd` must therefore require at least one id. Register it in the RPC method table (`src/server-v2.ts:767-900`) and as a `custom-providers` tool (`src/server-v2.ts:1008-1050`).
+    reusing `previewManualModels` (`src/probe.ts:468-486`), which resolves hand-typed ids against the local rules and the models.dev lookup with no endpoint traffic, exactly as v1 does at `src/tui.ts:571-604`. Note the contract at `src/probe.ts:472-475`: an omitted id list means "all models", and an explicitly empty one must be rejected by the caller: `manualAdd` must therefore require at least one id. Register it in the RPC method table (`src/server-v2.ts:767-900`) and as a `custom-providers` tool (`src/server-v2.ts:1008-1050`).
 - **Why:** with no `/models` route, a blocked gateway, or a key that cannot be obtained yet, the beginner currently cannot add a provider at all; the raw RPC surface confirms there is no manual method (`["list","add","edit","remove","reprobe","apply","refresh","catalog.list","catalog.add"]`).
-- **Evidence:** G3 (d) — `manual entry method present? NO`.
+- **Evidence:** G3 (d): `manual entry method present? NO`.
 
 ### B3. Deleting a provider must stick, and must not leave the credential behind
 - **Merged from:** G3 + G8(2) + J8(3).
@@ -77,16 +77,16 @@ Grounding: every `file:line` below was read from the working tree on 2026-10-10 
       for (const modelId of staleModels) providers.models.remove(providerId, modelId)
     })
     ```
-    then, best-effort, remove the credential and append a warning line to the message when that fails: `Provider deleted, but its saved API key could not be removed — check opencode's credential store.` The v2 `integration` interface today exposes only `connect.key`, `connection.active` and `connection.resolve` (`src/server-v2.ts:69-77`) — there is **no** removal method — so the item requires adding one (e.g. `connect.remove({ integrationID })` or `connection.remove(connection)`) to `V2Context` first, and degrading gracefully (warning, not throw) if the host does not provide it.
+    then, best-effort, remove the credential and append a warning line to the message when that fails: `Provider deleted, but its saved API key could not be removed, check opencode's credential store.` The v2 `integration` interface today exposes only `connect.key`, `connection.active` and `connection.resolve` (`src/server-v2.ts:69-77`), there is **no** removal method so the item requires adding one (e.g. `connect.remove({ integrationID })` or `connection.remove(connection)`) to `V2Context` first, and degrading gracefully (warning, not throw) if the host does not provide it.
 - **`src/tui-v2.ts:363`**
   - current: `` message: `Remove '${provider.id}' and its ${provider.models} model(s)?\n\nThis cannot be undone. Your other opencode settings are not touched. You can add it again later with /add-provider.` ``
   - replacement: append `\n\nIts saved API key is removed too, so it will not be left behind.` once the credential removal is wired, so the confirm matches what actually happens.
-- **Why:** after "Removed", the provider is still listed, `/reload-models` re-adds its models, a second delete says it "comes from your opencode config", and the API key survives — verified end to end.
-- **Evidence:** G6 (a) — after `remove`: `list ids = ["zombie"]`, live settings `{"baseURL":"…","dynamic":false}`, `refresh` → `"Updated: zombie."`, `list after refresh: ["zombie(2)"]`, credential still `"sk-gone"`; G6 (b) proves the `delete settings.baseURL` replacement makes `list` and `refresh` both return empty.
+- **Why:** after "Removed", the provider is still listed, `/reload-models` re-adds its models, a second delete says it "comes from your opencode config", and the API key survives: verified end to end.
+- **Evidence:** G6 (a): after `remove`: `list ids = ["zombie"]`, live settings `{"baseURL":"…","dynamic":false}`, `refresh` → `"Updated: zombie."`, `list after refresh: ["zombie(2)"]`, credential still `"sk-gone"`; G6 (b) proves the `delete settings.baseURL` replacement makes `list` and `refresh` both return empty.
 
 ### B4. A typed URL that is nearly right must be repaired, not rejected
-- **Merged from:** G5 + J10 + G12(1) — one normaliser in front of every entry point.
-- **New:** `src/endpoint.ts` — add `export function normalizeBaseUrl(raw: string): string` (infer `http://` for `localhost`/`127.`/`::1`/`10.`/`192.168.`/`172.16-31.`/`*.local`/`0.0.0.0`/`[…]` and `https://` otherwise when no scheme is present, then strip trailing `/` and a trailing `/chat/completions`, `/models`, `/responses`, `/messages`).
+- **Merged from:** G5 + J10 + G12(1): one normaliser in front of every entry point.
+- **New:** `src/endpoint.ts`: add `export function normalizeBaseUrl(raw: string): string` (infer `http://` for `localhost`/`127.`/`::1`/`10.`/`192.168.`/`172.16-31.`/`*.local`/`0.0.0.0`/`[…]` and `https://` otherwise when no scheme is present, then strip trailing `/` and a trailing `/chat/completions`, `/models`, `/responses`, `/messages`).
 - **`src/tui-v2.ts:186`**
   - current: `if (isValidUrl(baseURL)) break`
   - replacement:
@@ -112,11 +112,11 @@ Grounding: every `file:line` below was read from the working tree on 2026-10-10 
     })
     ```
   - replacement: same prompt, then `value = normalizeBaseUrl(value)` before the `edit` call, so Edit and Add accept the same strings.
-- **Why:** the two most common beginner inputs — a bare host and a copy-pasted full endpoint path — are rejected today even though the plugin can trivially repair both.
+- **Why:** the two most common beginner inputs, a bare host and a copy-pasted full endpoint path, are rejected today even though the plugin can trivially repair both.
 - **Evidence:** G1 `reject-bare-host` (`isValidUrl("localhost:11434/v1") = false`), S4 (bare host rejected; pasted path stored verbatim), G6 (c) (pasted path against a working gateway → `HTTP 404`; the same gateway with a clean `/v1` succeeds).
 
 ### B5. Re-running Add with an existing name must ask before replacing it
-- **Merged from:** G6 + J4(2) — one guard at the prompt, one backstop on the RPC.
+- **Merged from:** G6 + J4(2): one guard at the prompt, one backstop on the RPC.
 - **`src/tui-v2.ts:150-157`** (after the id-pattern check)
   - current: the id is validated and the flow proceeds straight to Step 2.
   - replacement: insert
@@ -137,11 +137,11 @@ Grounding: every `file:line` below was read from the working tree on 2026-10-10 
     })
     ```
   - replacement: `if (managed.has(candidate.providerId) && !input.overwrite) return { status: "confirm_replace", message: \`A provider named '${candidate.providerId}' already exists. Add overwrite=true to replace it.\` }` before the `managed.set`, so a programmatic caller cannot silently replace either.
-- **Why:** a mistyped-then-retyped name silently repoints a working provider and mixes the old and new model lists — the beginner sees "Done" and no indication anything was replaced.
-- **Evidence:** S5 — after the second add with the same id: managed baseURL replaced, models became `["a-1","a-2","b-1"]` (old and new mixed), no prompt of any kind.
+- **Why:** a mistyped-then-retyped name silently repoints a working provider and mixes the old and new model lists: the beginner sees "Done" and no indication anything was replaced.
+- **Evidence:** S5: after the second add with the same id: managed baseURL replaced, models became `["a-1","a-2","b-1"]` (old and new mixed), no prompt of any kind.
 
 ### B6. The reconcile default must never overwrite a hand-tuned model
-- **Merged from:** J1 + G2(2) + G7(1) — the v1 destructive default, plus the v2 unreachable per-model path, plus the missing metadata diff.
+- **Merged from:** J1 + G2(2) + G7(1): the v1 destructive default, plus the v2 unreachable per-model path, plus the missing metadata diff.
 - **`src/reconcile.ts:106`**
   - current: `const decision = decisions[p.id] ?? "apply"`
   - replacement: `const stored = current[p.id]; const decision = decisions[p.id] ?? (stored ? "keep" : "apply")`
@@ -154,7 +154,7 @@ Grounding: every `file:line` below was read from the working tree on 2026-10-10 
     await ctx.ui.dialog.alert({ title: `What was found for ${provider.id}`, message })
     ```
     followed by a two-option select `["Apply everything","Keep what I have"]`.
-  - replacement: show the per-model diff first (see M4) and offer three options — `Review each model` (first), `Apply everything`, `Keep what I have` — then, for `Review each`, loop one select per changed model with options in the order `Keep stored (default)`, `Apply update`, `Remove`, collecting a `decisions` map passed as JSON to the existing `apply` RPC (`src/server-v2.ts:641-705`).
+  - replacement: show the per-model diff first (see M4) and offer three options, `Review each model` (first), `Apply everything`, `Keep what I have`, then, for `Review each`, loop one select per changed model with options in the order `Keep stored (default)`, `Apply update`, `Remove`, collecting a `decisions` map passed as JSON to the existing `apply` RPC (`src/server-v2.ts:641-705`).
 - **`src/server-v2.ts:625-627`**
   - current: `` added.length === 0 && vanished.length === 0 ? `Up to date: the provider still lists the same ${fresh.length} model${fresh.length === 1 ? "" : "s"}. Nothing to do.` : … ``
   - replacement: compute a field-level diff per shared id (`context`, `output`, `image`, `reasoning`, `cost`) using `diffModels`/`describeUpdate` from `src/reconcile.ts:20-48`, list the changes as `  ~ ${id}: context 100000 -> 200000`, and only print "Up to date" when there is genuinely no field difference.
@@ -169,8 +169,8 @@ Grounding: every `file:line` below was read from the working tree on 2026-10-10 
 - **`src/tui-v2.ts:203-209`**
   - current: the Anthropic branch alerting `"Anthropic APIs cannot list their models here, so this wizard cannot finish.\n\nRun /add-from-catalog and pick Anthropic from the list.\n\nNothing was saved."`
   - replacement: since B1/B2 land first, replace this dead end with the manual path: `Anthropic APIs cannot list their models here. Type the model names you use and they will be added with metadata from the public model database.` → jump to the B2 manual prompt instead of aborting.
-- **Why:** the wizard sends Claude users to the catalog, and the catalog cannot add Anthropic, OpenAI, Google, Groq or Mistral — 25 of 226 sites have no `api` URL, and they are exactly the biggest names a beginner picks.
-- **Evidence:** S8 — `sites offered: 226`, `anthropic: offered=true add="The catalog entry for 'anthropic' has no usable web address…"` (same for `openai`, `google`, `mistral`); T4 shows the wizard's own instruction to use that catalog; the cache count is `with api: 201, without api: 25`.
+- **Why:** the wizard sends Claude users to the catalog, and the catalog cannot add Anthropic, OpenAI, Google, Groq or Mistral: 25 of 226 sites have no `api` URL, and they are exactly the biggest names a beginner picks.
+- **Evidence:** S8: `sites offered: 226`, `anthropic: offered=true add="The catalog entry for 'anthropic' has no usable web address…"` (same for `openai`, `google`, `mistral`); T4 shows the wizard's own instruction to use that catalog; the cache count is `with api: 201, without api: 25`.
 
 ---
 
@@ -181,7 +181,7 @@ Grounding: every `file:line` below was read from the working tree on 2026-10-10 
 - **`src/probe.ts:382-396`**
   - current: `describeProbed` renders every field with a prose source, e.g. `` `  Context window: ${probed.context?.toLocaleString("en-US") ?? "unknown"} tokens (${sourceWord(probed.contextSource)})` ``, so an unmeasured value reads as `estimated default`.
   - replacement: keep `describeProbed` for the long form and add `describeProbedShort(probed): string` for single-line picker rows emitting `128K [models.dev]` / `context 128K [local rules]` and **nothing** for `api-fallback`/`default`; in the long form, omit the whole `Context window:` / `Longest reply:` / `Thinking:` line when the corresponding source is `"default"` or `"api-fallback"` rather than asserting a capability that was never measured.
-- **`src/tui.ts:378`** — current: `` { title: "Apply", value: "apply", description: `${change.detail}${source}` } `` — replacement: `description: \`${change.detail}${source}\`` where `source` is now `describeProbedShort(fresh)` so the diff and its provenance share one line.
+- **`src/tui.ts:378`**, current: `` { title: "Apply", value: "apply", description: `${change.detail}${source}` } ``, replacement: `description: \`${change.detail}${source}\`` where `source` is now `describeProbedShort(fresh)` so the diff and its provenance share one line.
 - **Why:** a guessed 128K context currently reads exactly like a reported one, and `Thinking: supported (assumed default)` asserts a capability the plugin never measured.
 - **Evidence:** G1 `placeholder-written` and `prose-asserts-default` (`"Thinking: supported (assumed default)"`).
 
@@ -195,8 +195,8 @@ Grounding: every `file:line` below was read from the working tree on 2026-10-10 
       output: probed.maxOutput ?? 4_096,
     },
     ```
-  - replacement: emit `limit` with only the fields that have evidence — `const limit: { context?: number; output?: number } = {}; if (probed.context !== undefined && probed.contextSource !== "default" && probed.contextSource !== "api-fallback") limit.context = probed.context;` (same for `output`) — and widen `EnrichedModel.limit` (`src/enrich.ts:22-26`) so `context`/`output` may be absent.
-- **`src/enrich.ts:85,87`** — current: `context: epContext ?? meta?.limit.context ?? 128_000,` / `output: epOutput ?? meta?.limit.output ?? 4096,` — replacement: `...(epContext ?? meta?.limit.context) !== undefined ? { context: epContext ?? meta!.limit.context } : {}` (same for output), so no invented number reaches disk.
+  - replacement: emit `limit` with only the fields that have evidence, `const limit: { context?: number; output?: number } = {}; if (probed.context !== undefined && probed.contextSource !== "default" && probed.contextSource !== "api-fallback") limit.context = probed.context;` (same for `output`), and widen `EnrichedModel.limit` (`src/enrich.ts:22-26`) so `context`/`output` may be absent.
+- **`src/enrich.ts:85,87`**, current: `context: epContext ?? meta?.limit.context ?? 128_000,` / `output: epOutput ?? meta?.limit.output ?? 4096,`, replacement: `...(epContext ?? meta?.limit.context) !== undefined ? { context: epContext ?? meta!.limit.context } : {}` (same for output), so no invented number reaches disk.
 - **`src/enrich.ts:100-105`**
   - current:
     ```ts
@@ -229,10 +229,10 @@ Grounding: every `file:line` below was read from the working tree on 2026-10-10 
 - **`src/server-v2.ts:992-994`** (the `reprobe-models` tool description)
   - current:
     ```ts
-    "Re-probe a provider's endpoint and list model changes (added, vanished). Read-only — " +
+    "Re-probe a provider's endpoint and list model changes (added, vanished). Read-only: " +
     "apply-reconcile persists decisions.",
     ```
-  - replacement: `"Re-probe a provider's endpoint and list model changes (added, vanished, metadata updated). Read-only — apply-reconcile persists decisions. Defaults per row: changed/vanished → keep, new → apply."`
+  - replacement: `"Re-probe a provider's endpoint and list model changes (added, vanished, metadata updated). Read-only: apply-reconcile persists decisions. Defaults per row: changed/vanished → keep, new → apply."`
 - **`src/server-v2.ts:1004-1005`** (the `apply-reconcile` tool description)
   - current: `description: "Choose which model changes to accept (apply / keep / remove per model).",`
   - replacement: `description: "Choose which model changes to accept (apply / keep / remove per model). Omitted ids default to keep when the model is already stored and apply when it is new.",`
@@ -283,13 +283,13 @@ Grounding: every `file:line` below was read from the working tree on 2026-10-10 
     const raw = await showPrompt(api, `${field} (current: ${current})`)
     ```
   - replacement: for the numeric fields only, `const raw = await showPrompt(api, field === "context" || field === "output" ? \`${field} (blank = keep ${current}, 0 = clear)\` : \`${field} (current: ${current})\`)`
-- **Why:** the most-edited per-model values currently have no way to be kept or cleared — a blank line is an error and `0` is rejected — so fixing a wrong context window means retyping a number the user may not know.
+- **Why:** the most-edited per-model values currently have no way to be kept or cleared, a blank line is an error and `0` is rejected, so fixing a wrong context window means retyping a number the user may not know.
 - **Evidence:** G1 `zero-rejected` (`'context' must be a positive integer (got '0').`), `blank-rejected` (same for `''`).
 
 ### M6. The API key must be removable, and the legacy inline key must migrate on every save
 - **Merged from:** G8(1) + J8(1,2,3).
 - **`src/server-v2.ts:501`**
-  - current: `if (input.apiKey) {` — an empty string is ignored, so `edit` with `apiKey: ""` reports "Saved … is unchanged".
+  - current: `if (input.apiKey) {`: an empty string is ignored, so `edit` with `apiKey: ""` reports "Saved … is unchanged".
   - replacement:
     ```ts
     if (input.apiKey !== undefined) {
@@ -315,10 +315,10 @@ Grounding: every `file:line` below was read from the working tree on 2026-10-10 
       const inline = provider.options?.apiKey
       if (!inline) return { migrated: false, note: "" }
     ```
-    The ordering is already right — it stores first (`:412`) and strips the inline copy only after a truthy result (`:419`) — but it is reached from just two interactive edit paths, `src/tui.ts:411` and `src/server.ts:364`, and never from the add path.
+    The ordering is already right, it stores first (`:412`) and strips the inline copy only after a truthy result (`:419`), but it is reached from just two interactive edit paths, `src/tui.ts:411` and `src/server.ts:364`, and never from the add path.
   - replacement: call it from the shared save path (`reloadAllProviders`, `src/commands.ts:66-125`) so any write migrates, and add the comment `// auth store first, inline copy second: a failed write must never strand a key.`
-- **Why:** a beginner who switches a provider to a local no-key server, or who leaks a key, cannot clear it — "Saved. 'x' is unchanged." is the whole response, and the credential survives delete (B3).
-- **Evidence:** S9 — `edit apiKey:'' -> "Saved. 'keys' is unchanged."`, credential after `edit('')` still `"sk-first"`; G3 (e) — no key/credential method exists in the v2 RPC table.
+- **Why:** a beginner who switches a provider to a local no-key server, or who leaks a key, cannot clear it: "Saved. 'x' is unchanged." is the whole response, and the credential survives delete (B3).
+- **Evidence:** S9, `edit apiKey:'' -> "Saved. 'keys' is unchanged."`, credential after `edit('')` still `"sk-first"`; G3 (e), no key/credential method exists in the v2 RPC table.
 
 ### M7. Provider rename (v2), with the credential moved with it
 - **Merged from:** G9 + J8(3).
@@ -327,7 +327,7 @@ Grounding: every `file:line` below was read from the working tree on 2026-10-10 
   - replacement: add `{ title: "Name", value: "providerId", description: \`Currently: ${provider.id}\` }` and a `wizardRename` path that validates the id, runs `collisionSuggestion`, checks `list` for a duplicate, then calls a new `rename` RPC.
 - **`src/server-v2.ts`** (new op beside `edit`, `src/server-v2.ts:474-555`)
   - replacement: `rename: async (input: { from: string; to: string }) => { /* validId, collisionSuggestion, managed.has(to) guard, then move the managed entry + discovered models + credential (read connection for `from`, connect.key for `to`) */ }` and register it in the RPC table and tool set.
-- **Why:** a typo in a provider name is currently permanent without hand-editing config, and the v1 rename path warns that the credential is stranded — the beginner has no rename at all in v2.
+- **Why:** a typo in a provider name is currently permanent without hand-editing config, and the v1 rename path warns that the credential is stranded: the beginner has no rename at all in v2.
 - **Evidence:** v2 RPC methods list has no `rename`; `src/tui.ts:462` shows v1's own warning that the credential stays keyed by the old id.
 
 ### M8. Per-model metadata editing and per-model deletion in v2
@@ -347,8 +347,8 @@ Grounding: every `file:line` below was read from the working tree on 2026-10-10 
       ],
     })
     ```
-  - replacement: extend the field picker with `Edit a model` and `Delete models`, mirroring v1's `ModelField` set (`src/commands.ts:331`) — `name/context/output/reasoning/image` — and reusing the M5 prompt contract for the numeric ones.
-- **Why:** fixing one model's context window or dropping a stale model currently requires re-probing the whole provider (which cannot update metadata at all — see B6) or deleting and re-adding it.
+  - replacement: extend the field picker with `Edit a model` and `Delete models`, mirroring v1's `ModelField` set (`src/commands.ts:331`), `name/context/output/reasoning/image`, and reusing the M5 prompt contract for the numeric ones.
+- **Why:** fixing one model's context window or dropping a stale model currently requires re-probing the whole provider (which cannot update metadata at all: see B6) or deleting and re-adding it.
 - **Evidence:** v2 RPC table has no model-level write method; `src/tui-v2.ts` has no model field in the Edit picker (T6 option list).
 
 ### M9. Reasoning effort levels must survive into the stored model
@@ -356,8 +356,8 @@ Grounding: every `file:line` below was read from the working tree on 2026-10-10 
 - **`src/v2-models.ts:29`**
   - current: `if (model.reasoning) draft.variants = []`
   - replacement: `if (model.reasoning) draft.variants = (model.reasoningLevels?.length ? model.reasoningLevels : ["low","medium","high"]).map(level => ({ id: level, label: level, thinkingLevel: level }))` so the effort options the gateway advertised are actually selectable, defaulting a reasoning model to the full set rather than an empty list.
-- **Why:** a reasoning model appears in the picker but cannot be tuned — the probe collects `reasoningLevels` and the v2 draft throws them away.
-- **Evidence:** G1 `variants-dropped` — `reasoningLevels [low,medium,high] -> draft.variants = []`.
+- **Why:** a reasoning model appears in the picker but cannot be tuned: the probe collects `reasoningLevels` and the v2 draft throws them away.
+- **Evidence:** G1 `variants-dropped`: `reasoningLevels [low,medium,high] -> draft.variants = []`.
 
 ### M10. Endpoint normalisation must also write back the variant that answered
 - **Merged from:** J10(1,2) + G12(2) + G12(3).
@@ -371,7 +371,7 @@ Grounding: every `file:line` below was read from the working tree on 2026-10-10 
   - current: `if (FLAVORS[flavor].listShape === "none") return []`
   - replacement: `return []` stays, but `add` must report it as the distinct third outcome from B1 (`This provider's API does not expose /models. Use Add models manually.`) rather than folding it into the zero-model message.
 - **Why:** "does my URL need `/v1`?" is the number-one beginner question, and the plugin currently guesses at probe time but forgets the answer, so every later re-probe re-guesses.
-- **Evidence:** G6 (b) — `add` without `/v1` stored `"http://127.0.0.1:60285"` while the gateway only answers at `/v1/models`; the probe found the right candidate and the stored value was not updated. G6 (d) shows `http://192.168.1.5:8000/v1` and `http://10.0.0.7:8000/v1` still get an https variant.
+- **Evidence:** G6 (b): `add` without `/v1` stored `"http://127.0.0.1:60285"` while the gateway only answers at `/v1/models`; the probe found the right candidate and the stored value was not updated. G6 (d) shows `http://192.168.1.5:8000/v1` and `http://10.0.0.7:8000/v1` still get an https variant.
 
 ### M11. After every save, say what to do next and what was actually learned
 - **Merged from:** J11 + J12(1) + J9(4).
@@ -380,10 +380,10 @@ Grounding: every `file:line` below was read from the working tree on 2026-10-10 
     ```ts
     message: `Provider '${params.providerId}' added with ${modelCount} model(s).`,
     ```
-  - replacement: `` message: `Provider '${params.providerId}' added with ${modelCount} model(s). Open the model picker and choose one to start using it.` + (detected > 0 ? ` — metadata detected for ${detected} model(s)` : "") ``, where `detected` counts models whose `contextSource`/`maxOutputSource` is `"detected"`.
+  - replacement: `` message: `Provider '${params.providerId}' added with ${modelCount} model(s). Open the model picker and choose one to start using it.` + (detected > 0 ? `: metadata detected for ${detected} model(s)` : "") ``, where `detected` counts models whose `contextSource`/`maxOutputSource` is `"detected"`.
 - **`src/commands.ts:168`**
   - current: `message: "No models found at the given endpoint. Provider not added.",`
-  - replacement: split the two causes the way `zeroModelsHint` already does (`src/server-v2.ts:154-158`): with a key → `The endpoint answered but listed no models. Check that the address ends with /v1.`; without → `The endpoint answered but listed no models. Most gateways need an API key before they list models — add one and try again.`, and hand the flow to the B1 recovery menu instead of returning.
+  - replacement: split the two causes the way `zeroModelsHint` already does (`src/server-v2.ts:154-158`): with a key → `The endpoint answered but listed no models. Check that the address ends with /v1.`; without → `The endpoint answered but listed no models. Most gateways need an API key before they list models: add one and try again.`, and hand the flow to the B1 recovery menu instead of returning.
 - **`src/tui.ts:306-308`**
   - current:
     ```ts
@@ -393,8 +393,8 @@ Grounding: every `file:line` below was read from the working tree on 2026-10-10 
     }
     ```
   - replacement: open the B1-style select (`Try again` / `Add models manually` / `Cancel`) instead of a toast, so the v1 TUI gets the same recovery as v2.
-- **Why:** "Provider added with 3 model(s)." is true but useless — the beginner does not know that the next step is the model picker, and a failed probe tells them nothing actionable.
-- **Evidence:** S1/T1/T2 — the failure copy is either a bare alert or a toast with no next action; `src/commands.ts:168` collapses "unreachable" and "empty list" into one sentence.
+- **Why:** "Provider added with 3 model(s)." is true but useless: the beginner does not know that the next step is the model picker, and a failed probe tells them nothing actionable.
+- **Evidence:** S1/T1/T2: the failure copy is either a bare alert or a toast with no next action; `src/commands.ts:168` collapses "unreachable" and "empty list" into one sentence.
 
 ### M12. Adding a second provider on an endpoint you already use must say so
 - **Merged from:** G14 + J10(2).
@@ -498,14 +498,14 @@ Add another provider on the same address?\`, label: { confirm: "Add it anyway", 
   - current: `detail` strings and `describeProbed` output flow straight into dialog `description`/`searchText`.
   - replacement: run both through `sanitizeErrorMessage` (`src/security.ts:28-44`) before they are handed to a dialog, so no raw control character can reach the host's search field; add a regression test asserting no `\u007f` in any constructed `searchText`/`description`.
 - **Why:** the competitor's list widget silently appends the delete key to the search query; our dialogs are host widgets, so the only way to inherit that defect is to feed them a raw control character.
-- **Evidence:** `src/tui.ts:31-80` and `src/tui-v2.ts:21-30` delegate to host widgets — no key handling in our code, which is the correct design and must stay.
+- **Evidence:** `src/tui.ts:31-80` and `src/tui-v2.ts:21-30` delegate to host widgets: no key handling in our code, which is the correct design and must stay.
 
 ### m7. Keep the two non-goals out on purpose
 - **Merged from:** J-cut-list + K2/K3/K4/K5.
-- **All cited files, unchanged.** Per-model HTTP headers / per-model `baseUrl` override, `$ENV`/`!command` auth serialization, `models.yml` runtime selection and video-input display are all out of scope for a beginner; the safety nets we already have — `sanitizeErrorMessage` (`src/security.ts:28-44`), cost-only-from-evidence (`src/probe.ts:246-262`), the numbered beginner copy, and env-key fallback (`src/types.ts:30-33`) — are correct and must not regress.
-- **replacement:** none — this item is an explicit *do not do this*.
+- **All cited files, unchanged.** Per-model HTTP headers / per-model `baseUrl` override, `$ENV`/`!command` auth serialization, `models.yml` runtime selection and video-input display are all out of scope for a beginner; the safety nets we already have, `sanitizeErrorMessage` (`src/security.ts:28-44`), cost-only-from-evidence (`src/probe.ts:246-262`), the numbered beginner copy, and env-key fallback (`src/types.ts:30-33`), are correct and must not regress.
+- **replacement:** none: this item is an explicit *do not do this*.
 - **Why:** scope discipline is what keeps the remaining items finishable.
-- **Evidence:** join-experience's cut list (per-model headers, `$ENV`/`!command` auth, `models.yml`, video input) and join-safety K1–K5 (per-field sourcing, numbered beginner copy, error redaction, cost never guessed, key sanitization in logs) — all four cut items and all five keep items were re-read in `src/probe.ts`, `src/security.ts`, `src/types.ts`, `src/enrich.ts` and confirmed present as described.
+- **Evidence:** join-experience's cut list (per-model headers, `$ENV`/`!command` auth, `models.yml`, video input) and join-safety K1–K5 (per-field sourcing, numbered beginner copy, error redaction, cost never guessed, key sanitization in logs): all four cut items and all five keep items were re-read in `src/probe.ts`, `src/security.ts`, `src/types.ts`, `src/enrich.ts` and confirmed present as described.
 
 ### m8. Keep `default` meaning "no measurement", everywhere
 - **Merged from:** J2(3) + J6(1).
@@ -517,16 +517,16 @@ Add another provider on the same address?\`, label: { confirm: "Add it anyway", 
       probed.reasoningSource = "default"
     }
     ```
-    — a capability asserted without measurement.
+: a capability asserted without measurement.
   - replacement: leave `probed.reasoning` undefined when no tier produced evidence, and let M1's renderer omit the line; consumers already treat absence as "host decides" (`src/enrich.ts:120-126`).
-- **Why:** the same rule as M2 — absence is a statement, and `false` or `true` invented locally is not.
+- **Why:** the same rule as M2: absence is a statement, and `false` or `true` invented locally is not.
 - **Evidence:** E1 `prose-asserts-default` renders `"Thinking: supported (assumed default)"` from exactly this branch; `src/probe.ts:249-250` is the only place a reasoning capability is asserted without any tier producing evidence.
 
 ---
 
 ## Evidence
 
-All claims above were reproduced against the real compiled plugin surface on 2026-10-10 (Node v26.7.0, Windows). `dist/` was verified to match `src/` on every cited anchor (`Apply everything`, `Keep what I have`, `Step 2 of 5 — Base URL`, `That address could not be read`, `Use the catalog for Claude instead`, `no usable web address`, `Up to date: the provider still lists`, `did not answer with a model list` — all counts equal).
+All claims above were reproduced against the real compiled plugin surface on 2026-10-10 (Node v26.7.0, Windows). `dist/` was verified to match `src/` on every cited anchor (`Apply everything`, `Keep what I have`, `Step 2 of 5, Base URL`, `That address could not be read`, `Use the catalog for Claude instead`, `no usable web address`, `Up to date: the provider still lists`, `did not answer with a model list`, all counts equal).
 
 | id | transcript | what it proves |
 |---|---|---|

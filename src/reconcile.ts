@@ -41,8 +41,8 @@ function describeUpdate(id: string, current: EnrichedModel, fresh: EnrichedModel
   return `${id}: ${parts.join(", ")}`
 }
 
-/** Fresh wins for the fields it reports; stored-only metadata survives. Explicit
- * merge — a blind spread would wipe stored limit.input and cost. */
+/** Fresh wins for the fields it reports; stored-only metadata survives. The
+ * merge is explicit because a blind spread would wipe stored limit.input and cost. */
 export function mergeAppliedModel(stored: EnrichedModel, fresh: EnrichedModel): EnrichedModel {
   const merged: EnrichedModel = {
     name: fresh.name,

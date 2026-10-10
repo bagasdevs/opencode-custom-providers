@@ -1,7 +1,7 @@
-# Safety Nets — how `better-custom-provider@1.6.0` behaves when things go wrong
+# Safety Nets: how `better-custom-provider@1.6.0` behaves when things go wrong
 
 **Subject**: `C:/Users/Administrator/Documents/AI/opencode-dynamic-custom-providers/ref/better-custom-main` (`better-custom-provider` v1.6.0, `index.ts` → `/custom-provider`).
-**Scope**: every recovery path in the Add / Edit / Delete flows: probe failure, wrong URL, `/v1` fallback, `http→https` fallback, built-in id collision (`resolveBuiltinCollision`), duplicate name, duplicate endpoint, missing key, manual-entry escape, retry, cancel — with the real user-facing strings.
+**Scope**: every recovery path in the Add / Edit / Delete flows: probe failure, wrong URL, `/v1` fallback, `http→https` fallback, built-in id collision (`resolveBuiltinCollision`), duplicate name, duplicate endpoint, missing key, manual-entry escape, retry, cancel: with the real user-facing strings.
 **Method**: source reading of `src/flows/add.ts`, `src/flows/edit.ts`, `src/flows/shared.ts`, `src/url.ts`, `src/api-key.ts`, `src/ui/prompts.ts`, `src/config.ts`, `src/model-entry.ts`; the probing fallbacks additionally live in the `model-probe@0.7.0` dependency and were executed against real local HTTP servers (see §12 for the evidence index). Live TUI runs used the real `pi` v0.73.1 host with the unmodified extension.
 
 All quotes below are verbatim source strings (template placeholders shown as `${...}`).
@@ -51,14 +51,14 @@ Observed headlessly with the real flow code: empty input → `Error: Endpoint is
 
 ---
 
-## 2. Probe failure — retry / manual / cancel
+## 2. Probe failure: retry / manual / cancel
 
 When auto-detect fails, `collectModelIds()` (`src/flows/add.ts`) catches the error, appends a scheme hint, and offers a three-way recovery menu:
 
 ```ts
 const schemeHint = hasExplicitScheme(trimmedEndpointInput) ? "" : " No http:// or https:// was provided.";
 ctx.ui.notify(`Auto probe failed: ${error instanceof Error ? error.message : String(error)}.${schemeHint}`, "warning");
-const action = await selectOne(ctx, "Probe failed — what next?", [
+const action = await selectOne(ctx, "Probe failed: what next?", [
     { value: "retry", label: "Retry", description: "Probe again" },
     { value: "manual", label: "Add models manually", description: "Enter model ids by hand" },
     { value: "cancel", label: "Cancel", description: "Abort adding this provider" },
@@ -77,7 +77,7 @@ Observed live in the real pi TUI (endpoint `localhost:59999/v1`, dead port):
 Probing http://localhost:59999/v1/models ...
 Warning: Auto probe failed: fetch failed. No http:// or https:// was provided.
 
-Probe failed — what next?
+Probe failed: what next?
 > Retry            Probe again
   Add models manually   Enter model ids by hand
   Cancel           Abort adding this provider
@@ -87,13 +87,13 @@ Probe failed — what next?
 - **Cancel** returns `null` → the add flow aborts; verified no provider entry was written.
 - **Manual** drops into `promptManualModels()` (see §7).
 
-Edit-flow variant (`reprobeProvider`, `refreshModelMetadata`) has no retry menu — it reports and returns:
+Edit-flow variant (`reprobeProvider`, `refreshModelMetadata`) has no retry menu: it reports and returns:
 
 ```
 Probe failed: ${error instanceof Error ? error.message : String(error)}    (error)
 ```
 
-Note: `model-probe` wraps timeouts, network errors and 404s as *retryable* so they fall through to the next base variant; auth/client errors (e.g. 401) abort immediately without variant fallback — verified live (§12 A6).
+Note: `model-probe` wraps timeouts, network errors and 404s as *retryable* so they fall through to the next base variant; auth/client errors (e.g. 401) abort immediately without variant fallback: verified live (§12 A6).
 
 ---
 
@@ -135,7 +135,7 @@ Verified live against real local servers:
 | `http://127.0.0.1:18082` | `/v1/models` only | `/models` (404) → `/v1/models` (200) | `baseUrl=http://127.0.0.1:18082/v1`, ids found |
 | `http://127.0.0.1:18083` | `/models` returns HTML, `/v1/models` JSON | `/models` (200 HTML → non-JSON) → `/v1/models` (200) | ids found |
 
-Verified end-to-end in the real TUI: endpoint typed as `127.0.0.1:18090` (no `/v1`), the gateway 404s at `/models` and serves `/v1/models` — the picker listed the 3 models and the saved provider stored `"baseUrl": "http://127.0.0.1:18090/v1"`.
+Verified end-to-end in the real TUI: endpoint typed as `127.0.0.1:18090` (no `/v1`), the gateway 404s at `/models` and serves `/v1/models`: the picker listed the 3 models and the saved provider stored `"baseUrl": "http://127.0.0.1:18090/v1"`.
 
 The add flow announces each attempt first:
 
@@ -143,7 +143,7 @@ The add flow announces each attempt first:
 Probing ${buildProbeUrl(baseUrl)} ...
 ```
 
-**Recovery**: silent — the user sees the probe succeed and the model picker; the corrected base URL is stored.
+**Recovery**: silent: the user sees the probe succeed and the model picker; the corrected base URL is stored.
 
 ---
 
@@ -169,15 +169,15 @@ elapsed ≈ 16s = 4 variants × 4s `PROBE_TIMEOUT_MS`, proving both schemes and 
 
 ```ts
 export const BUILTIN_COLLISION_WARNING =
-    "This id matches a built-in provider. pi merges the built-in model catalog into it — built-in models stay visible even if you delete them here — and /login & /logout for this id share the same auth.json entry, so logging out wipes your key too. Consider a distinct id (e.g. suffix -relay) unless you deliberately want to extend the built-in.";
+    "This id matches a built-in provider. pi merges the built-in model catalog into it, built-in models stay visible even if you delete them here, and /login & /logout for this id share the same auth.json entry, so logging out wipes your key too. Consider a distinct id (e.g. suffix -relay) unless you deliberately want to extend the built-in.";
 ```
 
-`resolveBuiltinCollision()` (`src/ui/prompts.ts`) offers a one-click way out — used by both the Add name prompt and the Edit → Rename path:
+`resolveBuiltinCollision()` (`src/ui/prompts.ts`) offers a one-click way out: used by both the Add name prompt and the Edit → Rename path:
 
 ```ts
 const suggested = `${providerId}-custom`;
 const choice = await selectOne(ctx, `"${providerId}" collides with a built-in provider`, [
-    { value: "rename", label: `Use "${suggested}" instead`, description: "Recommended — your models and key stay fully separate from the built-in provider" },
+    { value: "rename", label: `Use "${suggested}" instead`, description: "Recommended: your models and key stay fully separate from the built-in provider" },
     { value: "keep", label: `Keep "${providerId}"`, description: `Extend the built-in on purpose. ${BUILTIN_COLLISION_WARNING}` },
     { value: "back", label: "Pick another name", description: "Go back and enter a different provider name" },
 ]);
@@ -191,9 +191,9 @@ Observed live in the real TUI, typing `openai` at the Add name prompt:
 ```
 "openai" collides with a built-in provider
 > Use "openai-custom" instead
-    Recommended — your models and key stay fully separate from the built-in provider
+    Recommended: your models and key stay fully separate from the built-in provider
   Keep "openai"
-    Extend the built-in on purpose. This id matches a built-in provider. pi merges the built-in model catalog into it — built-in models stay visible even if you delete them here — and /login & /logout for this id share...
+    Extend the built-in on purpose. This id matches a built-in provider. pi merges the built-in model catalog into it, built-in models stay visible even if you delete them here, and /login & /logout for this id share...
   Pick another name
     Go back and enter a different provider name
 ```
@@ -202,9 +202,9 @@ Observed live in the real TUI, typing `openai` at the Add name prompt:
 - **keep** → provider is written under the colliding id (deliberate extension). Verified: renaming to `groq` with Keep produced `Renamed "deepseek-custom" → "groq".` and the provider list shows `groq • ... • ⚠ built-in id`.
 - **back** → `Pick another name` re-prompts for the name (verified live).
 
-Collision ids are flagged in every provider list via `describeProviderInline()`: suffix `• ⚠ built-in id`. Delete-model and Delete-models confirmations add: `Note: "${providerId}" shares its id with a built-in provider — models that also ship in pi's built-in catalog will still appear in /model after deletion.`
+Collision ids are flagged in every provider list via `describeProviderInline()`: suffix `• ⚠ built-in id`. Delete-model and Delete-models confirmations add: `Note: "${providerId}" shares its id with a built-in provider: models that also ship in pi's built-in catalog will still appear in /model after deletion.`
 
-In the Edit → Rename path the same menu is reached (verified live with `deepseek`), and a resolved rename is announced: `Renamed "${providerId}" → "${newId}".` — after which the auth.json entry is carried over best-effort (§9).
+In the Edit → Rename path the same menu is reached (verified live with `deepseek`), and a resolved rename is announced: `Renamed "${providerId}" → "${newId}".`: after which the auth.json entry is carried over best-effort (§9).
 
 ---
 
@@ -221,7 +221,7 @@ if (existingIds.has(providerId)) {
 
 Observed live: after saving `custom-localhost-59999`, re-using the name produced the warning and re-prompted with title `Provider name (must be unique)`. Empty slug also loops: `Provider name is required.` (error).
 
-Backstop in `persistProvider()` (`src/flows/shared.ts`), in case the config changed underneath the prompt — exercised for real with a simulated concurrent writer that creates the id between the name prompt and the save:
+Backstop in `persistProvider()` (`src/flows/shared.ts`), in case the config changed underneath the prompt: exercised for real with a simulated concurrent writer that creates the id between the name prompt and the save:
 
 ```ts
 if (config.providers[providerId]) {
@@ -230,11 +230,11 @@ if (config.providers[providerId]) {
 }
 ```
 
-Edit → Rename duplicate: `Provider "${newId}" already exists. Choose a different name.` (verified live with `mock-gw`) — the rename is refused, nothing written.
+Edit → Rename duplicate: `Provider "${newId}" already exists. Choose a different name.` (verified live with `mock-gw`): the rename is refused, nothing written.
 
 ---
 
-## 8. Duplicate endpoint (not an error — a confirm)
+## 8. Duplicate endpoint (not an error: a confirm)
 
 `confirmEndpointReuse()` (`src/flows/add.ts`) detects providers already using the normalized endpoint and asks:
 
@@ -252,7 +252,7 @@ Verified live with `http://127.0.0.1:18090/v1` (already used by `mock-gw`). `No`
 
 ## 9. Missing / unwritable API key
 
-### 9a. "None" is a first-class choice — a placeholder keeps the provider loadable
+### 9a. "None" is a first-class choice: a placeholder keeps the provider loadable
 `promptApiKey()` offers `API key` (literal) or `None`; a blank literal input is treated as `none`. `serializeApiKey()` (`src/api-key.ts`) maps none → `"dummy"` (or `"ollama"` for the Ollama style), and the flow notifies:
 
 ```
@@ -290,26 +290,26 @@ Verified live by corrupting `auth.json` before the save: the provider landed in 
 
 - Id prompt: `Model id` (first) / `Add another model id` (subsequent); blank enter or esc finishes. Nothing entered → returns `null` → flow aborts.
 - Duplicate id inside the same session: `Model already added: ${id}` (warning) and re-prompts (verified live).
-- Each id lands in its own metadata menu (`Reasoning • xhigh`, `Image input • off`, `Context window • 258000`, `Max output tokens • 32000`, `Done`) whose values start from `resolveModelInfo` — local rules + defaults, since manual ids have no probe data.
+- Each id lands in its own metadata menu (`Reasoning • xhigh`, `Image input • off`, `Context window • 258000`, `Max output tokens • 32000`, `Done`) whose values start from `resolveModelInfo`: local rules + defaults, since manual ids have no probe data.
 - Invalid numbers: `Enter a whole number of tokens (0 to clear).` (warning, verified headlessly via the context prompt with input `abc`).
 - Unknown models get a 256K context starting point instead of staying unset (`contextWindow: resolved.contextWindow ?? 262144`).
-- Adding ids that already exist in the provider: `Nothing to add — all selected models already exist.` (info).
+- Adding ids that already exist in the provider: `Nothing to add: all selected models already exist.` (info).
 
 ---
 
 ## 11. Edit / Delete flow safety nets
 
-- **No providers at all**: `No providers found in ${MODELS_JSON_PATH}` (warning) — edit and delete flows return to the caller.
-- **Provider vanished under the cursor**: `Provider "${providerId}" no longer exists.` (warning) — every mutator (`mutateProvider`, `removeProvider`, `renameProvider`, …) re-reads and bails.
+- **No providers at all**: `No providers found in ${MODELS_JSON_PATH}` (warning): edit and delete flows return to the caller.
+- **Provider vanished under the cursor**: `Provider "${providerId}" no longer exists.` (warning): every mutator (`mutateProvider`, `removeProvider`, `renameProvider`, …) re-reads and bails.
 - **Model vanished**: `Model "${modelId}" no longer exists.` (warning).
 - **Provider has no models**: `Provider "${providerId}" has no models.` (warning).
 - **Every write is read-check-write**: `loadModelsConfig()` → mutate → `saveModelsConfig()`; read failures produce `Could not read ${MODELS_JSON_PATH}: ${message}` (error), write failures `Could not write ${MODELS_JSON_PATH}: ${message}` (error), and the mutation reports `false` so callers do not claim success.
-- **Re-probe reconciliation** never silently drops models: models the endpoint no longer returns are listed with a `• unsupported` suffix, tri-state default **keep** (`[x]`); models with metadata diffs default to `[-]` (keep without update). Picker legend: `[ ] remove/skip • [-] keep without update • [x] keep/add with latest metadata`. A no-op run reports `No changes — everything the endpoint returned is already configured and up to date.`
+- **Re-probe reconciliation** never silently drops models: models the endpoint no longer returns are listed with a `• unsupported` suffix, tri-state default **keep** (`[x]`); models with metadata diffs default to `[-]` (keep without update). Picker legend: `[ ] remove/skip • [-] keep without update • [x] keep/add with latest metadata`. A no-op run reports `No changes: everything the endpoint returned is already configured and up to date.`
 - **Metadata refresh** (`refreshModelMetadata`) requires an explicit source choice and applies only real diffs; a matching entry reports `${modelId}: the selected entry matches the stored config.` and changes are confirmed first: `Apply ${n} change${s}?`.
-- **Registry refresh is best-effort**: `refreshModelRegistry()` swallows failures — the config is already on disk; a stale in-memory snapshot fixes itself on restart.
+- **Registry refresh is best-effort**: `refreshModelRegistry()` swallows failures: the config is already on disk; a stale in-memory snapshot fixes itself on restart.
 - **Delete provider**: confirm dialog `Delete provider?` with the provider summary (id, api, model count, endpoint); cancel just returns. On success: `Deleted provider "${providerId}" from ${MODELS_JSON_PATH}` and the auth.json entry is dropped best-effort (only `api_key` entries; an oauth login under the same id is left alone).
-- **Corrupt models.json** (live test, file containing `{ this is not json`): `Error: Could not read C:\...\models.json: Expected property name or '}' in JSON at position 2 (line 1 column 3)` — the flow aborts without crashing the host.
-- **Catalog unreachable** (live test with all three model-probe catalog tiers broken: live API, CDN snapshot, bundled snapshot): `Error: Could not fetch the models.dev catalog: models.dev catalog contained no usable providers` — flow returns to the menu. (In normal operation model-probe degrades through three tiers before this can happen.)
+- **Corrupt models.json** (live test, file containing `{ this is not json`): `Error: Could not read C:\...\models.json: Expected property name or '}' in JSON at position 2 (line 1 column 3)`: the flow aborts without crashing the host.
+- **Catalog unreachable** (live test with all three model-probe catalog tiers broken: live API, CDN snapshot, bundled snapshot): `Error: Could not fetch the models.dev catalog: models.dev catalog contained no usable providers`: flow returns to the menu. (In normal operation model-probe degrades through three tiers before this can happen.)
 - **YAML config without the `yaml` package** (OMP): `"${MODELS_JSON_PATH} is YAML, but the "yaml" package is not installed. Run "npm install" in the better-custom folder, or reinstall the extension with "pi install", to edit YAML configs.` (error).
 
 ---
@@ -330,7 +330,7 @@ All paths under `C:/Users/Administrator/AppData/Local/Temp/ocp-ux/artifacts/`.
 | A8 | `14-corrupt-config-error.txt` | corrupt models.json error, clean abort |
 | A9 | `16-auth-fail-save.txt` | auth.json write failure → provider kept + `/login` hint |
 | A10 | `20-catalog-fetch-failure.txt` | catalog unreachable error, clean return |
-| A11 | `31-headless-add-flow-500.txt` | verbatim notifies incl. "Could not probe developer-role support — defaulting to off (safe for every endpoint)." |
+| A11 | `31-headless-add-flow-500.txt` | verbatim notifies incl. "Could not probe developer-role support : defaulting to off (safe for every endpoint)." |
 | A12 | `32-headless-retry-flow.txt` | retry loop, duplicate-model warning, verbatim notifies |
 | A13 | `33-headless-collision-rename.txt`, `35-headless-collision-keep.txt` | collision rename/keep branches, saved ids |
 | A14 | `34-headless-probe-cancel.txt` | Cancel writes nothing |

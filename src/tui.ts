@@ -477,7 +477,7 @@ export const tui: TuiPlugin = async (api: TuiPluginApi) => {
           await save()
           api.ui.toast({ message: `Renamed to '${finalId}'.`, variant: "success" })
           if (warning) api.ui.toast({ message: warning, variant: "warning" })
-          api.ui.toast({ message: "Stored credential (if any) is still keyed by the old id — re-enter it via Edit Provider → API key.", variant: "warning" })
+          api.ui.toast({ message: "Stored credential (if any) is still keyed by the old id: re-enter it via Edit Provider → API key.", variant: "warning" })
           return
         }
         if (action === "endpoint") {
