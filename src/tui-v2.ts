@@ -130,7 +130,7 @@ async function askApiKey(ctx: V2TuiContext, title: string): Promise<string | und
     description:
       "Paste the key you got from your provider (it often starts with sk-). Most providers need one. " +
       "It is saved in opencode's secure key store, never shown again, and you can replace it any time with /edit-provider. " +
-      "Leave empty only for local servers like Ollama.",
+      "Leave empty only for local servers like Ollama. Press Esc to cancel — nothing is saved until the last step.",
   })
 }
 async function promptManualAdd(

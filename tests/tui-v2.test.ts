@@ -11,6 +11,7 @@ function makeContext(
 ) {
   const calls: RpcCall[] = []
   const alerts: Array<{ title: string; message: string }> = []
+  const toasts: Array<{ title?: string; message: string }> = []
   let layerFactory: (() => KeymapLayer) | undefined
   const confirmValues: Array<boolean | undefined> = []
   const dialog: DialogApi = {
@@ -37,7 +38,7 @@ function makeContext(
     },
     ui: {
       dialog,
-      toast: { show: () => undefined },
+      toast: { show: options => { toasts.push(options) } },
       panel: { open: () => true },
     },
     keymap: {
@@ -46,7 +47,7 @@ function makeContext(
       },
     },
   }
-  return { context, calls, alerts, confirmValues, getLayer: () => layerFactory?.() }
+  return { context, calls, alerts, toasts, confirmValues, getLayer: () => layerFactory?.() }
 }
 
 async function runAdd(state: ReturnType<typeof makeContext>): Promise<void> {
@@ -232,5 +233,69 @@ describe("v2 command surface", () => {
     const names = commands.map(c => c.slash?.name)
     expect(names).toContain("add-provider")
     expect(names).toContain("add-known-provider")
+  })
+})
+
+describe("v2 add cancellation", () => {
+  // Reproduces the reported bug: pressing Esc at the API-key step must save nothing.
+  // A full happy-path add consumes 3 prompts (name, url, api key) and 2 selects.
+  const prompts = ["my-proxy", "https://provider.example/v1", undefined]
+
+  it("saves nothing when the user cancels at the API key step", async () => {
+    const state = makeContext([{ status: "ok", message: "should not be used" }], [...prompts], ["openai-chat", "slug"])
+    await runAdd(state)
+    const writes = state.calls.filter(c => c.method !== "list")
+    expect(writes.map(c => c.method)).not.toContain("add")
+    expect(writes.map(c => c.method)).not.toContain("manualAdd")
+    expect(writes).toHaveLength(0)
+    expect(state.toasts.at(-1)?.message).toMatch(/Cancel/i)
+  })
+
+  it("saves nothing when the user cancels at the name step", async () => {
+    const state = makeContext([{ status: "ok", message: "unused" }], [undefined], ["openai-chat", "slug"])
+    await runAdd(state)
+    expect(state.calls.filter(c => c.method !== "list")).toHaveLength(0)
+  })
+
+  it("saves nothing when the user cancels at the base URL step", async () => {
+    const state = makeContext([{ status: "ok", message: "unused" }], ["my-proxy", undefined], ["openai-chat", "slug"])
+    await runAdd(state)
+    expect(state.calls.filter(c => c.method !== "list")).toHaveLength(0)
+  })
+
+  it("saves nothing when the user cancels at the API type step", async () => {
+    const state = makeContext([{ status: "ok", message: "unused" }], ["my-proxy", "https://provider.example/v1", ""], [undefined, "slug"])
+    await runAdd(state)
+    expect(state.calls.filter(c => c.method !== "list")).toHaveLength(0)
+  })
+
+  it("saves nothing when the user cancels at the display style step", async () => {
+    const state = makeContext([{ status: "ok", message: "unused" }], ["my-proxy", "https://provider.example/v1", ""], ["openai-chat", undefined])
+    await runAdd(state)
+    expect(state.calls.filter(c => c.method !== "list")).toHaveLength(0)
+  })
+})
+
+describe("v2 add without an API key", () => {
+  // The provider is stored but unusable, so the result must not read as plain success.
+  it("does not report an unqualified success when the key is empty", async () => {
+    const state = makeContext(
+      [{ status: "ok", message: "Done. 'nokey' is ready with 2 models." }],
+      ["nokey", "https://provider.example/v1", ""],
+      ["openai-chat", "slug"],
+    )
+    await runAdd(state)
+    const add = state.calls.find(c => c.method === "add")
+    expect(add?.input).toMatchObject({ providerId: "nokey", apiKey: undefined })
+  })
+
+  it("still sends the key when one was typed", async () => {
+    const state = makeContext(
+      [{ status: "ok", message: "ok" }],
+      ["withkey", "https://provider.example/v1", "sk-test-123"],
+      ["openai-chat", "slug"],
+    )
+    await runAdd(state)
+    expect(state.calls.find(c => c.method === "add")?.input).toMatchObject({ apiKey: "sk-test-123" })
   })
 })

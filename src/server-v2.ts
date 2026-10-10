@@ -601,7 +601,15 @@ export const setup = async (ctx: V2Context): Promise<void> => {
           )
         }
       } else {
-        lines.push("No API key was given. If this provider needs one, run /edit-provider and choose \"API key\".")
+        lines.push(
+          "No API key was given, so this provider may not be able to sign in. " +
+            "If it needs one, run /edit-provider and choose \"API key\" — nothing else has to be redone.",
+        )
+      }
+      // Without a key the provider is stored but unusable, so the first line must not read as
+      // an unqualified success: that is what makes a half-finished setup look complete.
+      if (!input.apiKey) {
+        lines[0] = `Saved '${candidate.providerId}' with ${fresh.length} model${fresh.length === 1 ? "" : "s"}, but it has no API key yet so it cannot sign in.`
       }
       return { status: "ok", message: lines.join("\n") }
     },
