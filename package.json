@@ -1,6 +1,6 @@
 {
   "name": "opencode-custom-providers",
-  "version": "1.0.1-stable",
+  "version": "1.0.2",
   "description": "Dynamic model discovery for OpenAI-compatible providers in OpenCode with models.dev enrichment",
   "repository": {
     "type": "git",
@@ -15,7 +15,9 @@
   "types": "./dist/server.d.ts",
   "files": [
     "dist",
-    "bundles"
+    "bundles",
+    "scripts/postinstall.js",
+    "CHANGELOG.md"
   ],
   "exports": {
     ".": {

@@ -5,18 +5,33 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [1.0.1-stable] - 2026-10-10
+## [1.0.2] - 2026-10-10
 
-OpenCode 2 support. The default export now serves both hosts: `{ id, server, setup }`.
+OpenCode 2 support, and a beginner-proof setup path on both hosts.
 
 ### Added
 - OpenCode 2 server plugin (`src/server-v2.ts`): provider discovery through the v2 provider registry, credential-backed API keys, and eight agent tools
 - OpenCode 2 TUI plugin (`src/tui-v2.ts`): palette and slash commands for add, catalog add, re-probe, reconcile, edit, delete, refresh, list
+- Manual model entry for endpoints that cannot list models (no `/models` route, blocked gateway, or a key that is not available yet)
+- A failed or empty probe now offers retry / add-models-manually / cancel instead of a dead-end alert
+- URL repair: a bare host or a pasted endpoint path is normalised before it is validated
+- Confirmation before replacing an existing provider, and before adding a second provider on an address already in use
 - Wizard state persists through host storage; the server exposes it to the TUI over RPC
-- `mergeDiscoveredIntoStored` keeps user and catalog metadata when a re-probe omits a field
 
 ### Changed
+- Reconcile defaults to the safe row: an omitted per-model decision keeps a stored model and applies only a new one
+- The catalog only offers sites that can actually be added (those without a usable address are filtered out)
+- Removing a provider also removes its models, and it stays removed across a restart
+- The API key can be cleared, and a failed key save no longer claims the key survives a restart
+- `postinstall` writes one plugin directory with the same file names the README documents, and clears the loose bundles an earlier release left behind
 - Comments trimmed across `src/` to the minimal senior style
+
+### Fixed
+- A probe that returned the same number of models reported "Up to date" even when a model's metadata had changed
+- Adding a built-in provider name (for example `openai`) overwrote that provider instead of warning
+
+### Note
+- `1.0.1` was published from a tree whose `dist/` predated the OpenCode 2 work, so that release shipped without `dist/server-v2.js` and `dist/tui-v2.js`. `1.0.2` is the first published release that actually contains them.
 
 ## [1.0.0] - 2026-10-10
 
