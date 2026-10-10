@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest"
 import { collisionSuggestion, parseFlavor } from "../src/flavors.js"
 import { matchLocalRule } from "../src/rules.js"
-import { buildCandidateUrls, describeProbed, resolveModel } from "../src/probe.js"
+import { buildCandidateUrls, describeProbed, describeProbedShort, resolveModel } from "../src/probe.js"
 import { applyDecisions, diffModels, mergeAppliedModel } from "../src/reconcile.js"
 import type { EnrichedModel } from "../src/enrich.js"
 
@@ -134,24 +134,51 @@ describe("resolveModel tiers", () => {
 })
 
 describe("describeProbed", () => {
-  it("renders a one-line summary with source tags", () => {
-    expect(describeProbed({
-      id: "gpt-4o",
+  const probed = {
+    id: "gpt-4o",
+    context: 128_000,
+    contextSource: "detected",
+    maxOutput: 16_384,
+    maxOutputSource: "models.dev",
+    reasoning: true,
+    reasoningSource: "local-rules",
+    reasoningLevels: ["low", "high"],
+    image: false,
+    imageSource: "default",
+    cost: { input: 2.5, output: 10 },
+    costSource: "models.dev",
+  } as Parameters<typeof describeProbed>[0]
+
+  it("shows a value measured on this endpoint bare and tags a guess (M1)", () => {
+    expect(describeProbed(probed)).toBe(
+      "Model: gpt-4o\n" +
+        "  Context window: 128,000 tokens\n" +
+        "  Longest reply: 16,384 tokens [models.dev]\n" +
+        "  Thinking: supported (low/high) [local-rules]\n" +
+        "  Price: $2.5 per million input tokens, $10 per million output tokens [models.dev]",
+    )
+  })
+
+  it("omits a guessed value instead of asserting it (M1, m8)", () => {
+    const unmeasured = {
+      id: "zzz-unknown",
       context: 128_000,
-      contextSource: "detected",
-      maxOutput: 16_384,
-      maxOutputSource: "models.dev",
-      reasoning: true,
-      reasoningSource: "local-rules",
-      reasoningLevels: ["low", "high"],
+      contextSource: "api-fallback",
       image: false,
       imageSource: "default",
-      cost: { input: 2.5, output: 10 },
-      costSource: "models.dev",
-    })).toBe(
-      "gpt-4o | ctx 128000 [detected] | out 16384 [models.dev] | " +
-      "reasoning (low/high) [local-rules] | image [-] [default] | cost $2.5/$10 [models.dev]",
+    } as Parameters<typeof describeProbed>[0]
+    const out = describeProbed(unmeasured)
+    expect(out).toBe("Model: zzz-unknown")
+    expect(out).not.toContain("128,000")
+    expect(out).not.toContain("Thinking")
+    expect(out).not.toContain("Image input")
+  })
+
+  it("renders a one-line picker summary with source tags only for guesses", () => {
+    expect(describeProbedShort(probed)).toBe(
+      "context 128K, out 16.4K [models.dev], thinking on [local-rules]",
     )
+    expect(describeProbedShort({ id: "x", context: 128_000, contextSource: "api-fallback" })).toBe("")
   })
 })
 
@@ -164,9 +191,9 @@ describe("diffModels + applyDecisions", () => {
 
   it("detects added, updated, and removed models", () => {
     const changes = diffModels(stored, [
-      { id: "same", context: 1_000, maxOutput: 100 },
-      { id: "changed", context: 2_000, maxOutput: 100 },
-      { id: "brand-new", context: 1_000, maxOutput: 100 },
+      { id: "same", context: 1_000, maxOutput: 100, contextSource: "detected", maxOutputSource: "detected" },
+      { id: "changed", context: 2_000, maxOutput: 100, contextSource: "detected", maxOutputSource: "detected" },
+      { id: "brand-new", context: 1_000, maxOutput: 100, contextSource: "detected", maxOutputSource: "detected" },
     ], "slug")
     expect(changes.map(c => `${c.kind}:${c.id}`).sort()).toEqual([
       "added:brand-new",
@@ -178,8 +205,8 @@ describe("diffModels + applyDecisions", () => {
 
   it("applies tri-state decisions with safe defaults", () => {
     const next = applyDecisions(stored, [
-      { id: "changed", context: 2_000, maxOutput: 100 },
-      { id: "brand-new", context: 1_000, maxOutput: 100 },
+      { id: "changed", context: 2_000, maxOutput: 100, contextSource: "detected", maxOutputSource: "detected" },
+      { id: "brand-new", context: 1_000, maxOutput: 100, contextSource: "detected", maxOutputSource: "detected" },
     ], { gone: "remove" }, "slug")
     expect(next["changed"].limit.context).toBe(2_000)
     expect(next["brand-new"].limit.context).toBe(1_000)
@@ -233,7 +260,7 @@ describe("mergeAppliedModel (apply must not drop stored-only fields)", () => {
   it("applyDecisions merges instead of replacing an existing entry", () => {
     const next = applyDecisions(
       { m1: stored },
-      [{ id: "m1", context: 2_000, maxOutput: 200, image: true }],
+      [{ id: "m1", context: 2_000, maxOutput: 200, image: true, contextSource: "detected", maxOutputSource: "detected" }],
       {},
       "slug",
     )

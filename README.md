@@ -7,6 +7,10 @@
 Interactive wizard for managing custom LLM providers in OpenCode: add providers,
 re-probe their models, and edit everything afterwards from the TUI or via agent tools.
 
+Works on OpenCode 1 and OpenCode 2. The default export serves both hosts
+(`{ id, server, setup }`); v1 resolves `./server` and `./tui`, v2 resolves `.`
+and `./tui`.
+
 ## Quick Start
 
 **1. Install the plugin**
@@ -33,6 +37,7 @@ Models are discovered and enriched automatically.
 
 ## Features
 
+- **OpenCode 2 support** - v2 server plugin (provider registry + credentials + agent tools) and v2 TUI plugin (palette and slash commands); v1 keeps its own entrypoints
 - **Wizard** - TUI slash commands and agent tools over one shared layer
 - **Catalog add** - take a models.dev site's URL and model list, no probing
 - **5 flavors** - OpenAI Chat/Responses, Anthropic, Gemini, Ollama

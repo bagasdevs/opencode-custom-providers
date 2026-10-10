@@ -1,7 +1,11 @@
 import tseslint from "typescript-eslint"
 
 export default tseslint.config(
-  { ignores: ["dist/**", "node_modules/**", ".gitnexus/**", "coverage/**"] },
+  {
+    // ref/ holds third-party reference code we do not own and never ship; .omo/ is local
+    // tooling evidence. Neither belongs in our lint surface.
+    ignores: ["dist/**", "bundles/**", "node_modules/**", ".gitnexus/**", "coverage/**", "ref/**", ".omo/**"],
+  },
   ...tseslint.configs.recommended,
   {
     files: ["src/**/*.ts"],

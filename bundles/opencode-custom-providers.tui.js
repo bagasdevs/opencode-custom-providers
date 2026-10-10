@@ -1,3 +1,91 @@
+// src/flavors.ts
+var FLAVORS = {
+  "openai-chat": {
+    flavor: "openai-chat",
+    label: "OpenAI-compatible (most common)",
+    description: "Choose this for OpenAI, OpenRouter, DeepSeek, Groq, Together, LM Studio, vLLM and most other services. If unsure, choose this one",
+    listPaths: ["/models"],
+    listShape: "openai-list",
+    fallbackLimits: { context: 128e3, output: 4096 }
+  },
+  "openai-responses": {
+    flavor: "openai-responses",
+    label: "OpenAI Responses API",
+    description: "Only for services that explicitly ask for the 'Responses' API. If unsure, choose the first option",
+    listPaths: ["/models"],
+    listShape: "openai-list",
+    fallbackLimits: { context: 128e3, output: 4096 }
+  },
+  anthropic: {
+    flavor: "anthropic",
+    label: "Anthropic (Claude)",
+    description: "Claude models; the endpoint cannot list models, so add them from the catalog",
+    listPaths: [],
+    listShape: "none",
+    fallbackLimits: { context: 2e5, output: 32e3 }
+  },
+  gemini: {
+    flavor: "gemini",
+    label: "Google Gemini",
+    description: "Google's Gemini API (get a key at aistudio.google.com)",
+    listPaths: ["/v1beta/models", "/models"],
+    listShape: "gemini-list",
+    fallbackLimits: { context: 1e6, output: 64e3 }
+  },
+  ollama: {
+    flavor: "ollama",
+    label: "Ollama (on this computer)",
+    description: "A local Ollama install, usually http://localhost:11434",
+    listPaths: ["/api/tags", "/models"],
+    listShape: "ollama-tags",
+    fallbackLimits: { context: 128e3, output: 4096 }
+  }
+};
+var DEFAULT_FLAVOR = "openai-chat";
+function parseFlavor(value) {
+  if (!value) return null;
+  const v = value.trim().toLowerCase().replaceAll("_", "-");
+  const found = Object.keys(FLAVORS).find((f) => f === v);
+  return found ?? null;
+}
+var BUILT_IN_IDS = /* @__PURE__ */ new Set([
+  "opencode",
+  "openai",
+  "anthropic",
+  "google",
+  "gemini",
+  "deepseek",
+  "xai",
+  "grok",
+  "groq",
+  "ollama",
+  "openrouter",
+  "azure",
+  "bedrock",
+  "vertex",
+  "mistral",
+  "together",
+  "fireworks",
+  "cerebras",
+  "perplexity",
+  "cohere",
+  "moonshot",
+  "zhipu",
+  "lmstudio",
+  "lm-studio",
+  "vllm",
+  "llamacpp",
+  "llama-cpp",
+  "github-copilot",
+  "copilot"
+]);
+function collisionSuggestion(providerId) {
+  if (BUILT_IN_IDS.has(providerId.toLowerCase())) {
+    return `${providerId}-custom`;
+  }
+  return null;
+}
+
 // src/security.ts
 var VALID_PROTOCOLS = /* @__PURE__ */ new Set(["http:", "https:"]);
 function isValidUrl(url) {
@@ -8,8 +96,8 @@ function isValidUrl(url) {
     return false;
   }
 }
-function sanitizeModelId(id2) {
-  return id2.trim().replaceAll(/[^a-zA-Z0-9/_\-:.]/g, "_");
+function sanitizeModelId(id3) {
+  return id3.trim().replaceAll(/[^a-zA-Z0-9/_\-:.]/g, "_");
 }
 function sanitizeUrl(raw) {
   try {
@@ -22,18 +110,470 @@ function sanitizeUrl(raw) {
     return raw.split("?")[0];
   }
 }
+function sanitizeDialogText(text) {
+  return text.replaceAll(/[\u0000-\u001f\u007f]/g, "");
+}
 function sanitizeErrorMessage(error) {
   let message = error instanceof Error ? error.message : String(error);
   message = message.replaceAll(
     /https?:\/\/[^\s"'`<>]+/gi,
     (match) => sanitizeUrl(match)
   );
-  return message.replaceAll(/Bearer\s+[^\s]+/gi, "Bearer [REDACTED]").replaceAll(/api[_-]?key[=:]\s*[^\s&]+/gi, "api_key=[REDACTED]").replaceAll(/sk-[a-zA-Z0-9_-]+/g, "sk-[REDACTED]");
+  const redacted = message.replaceAll(/Bearer\s+[^\s]+/gi, "Bearer [REDACTED]").replaceAll(/api[_-]?key[=:]\s*[^\s&]+/gi, "api_key=[REDACTED]").replaceAll(/sk-[a-zA-Z0-9_-]+/g, "sk-[REDACTED]").replaceAll(/\b(key|token|access_token|password)=[^\s&]+/gi, "$1=[REDACTED]");
+  const printable = sanitizeDialogText(redacted);
+  return printable.length > 400 ? `${printable.slice(0, 400)}\u2026` : printable;
 }
 
+// src/ids.ts
+var id = "opencode-custom-providers";
+
+// src/tui-v2.ts
+var id2 = `${id}.tui`;
+var RPC_ID = id;
+var FLAVOR_OPTIONS = Object.values(FLAVORS).map((spec) => ({
+  title: spec.label,
+  value: spec.flavor,
+  description: spec.description
+}));
+var SIMPLE_OPTIONS = [
+  {
+    title: "Model id",
+    value: "slug",
+    description: "Short name, for example gpt-4o. Works everywhere. Safe choice."
+  },
+  {
+    title: "Friendly name",
+    value: "name",
+    description: "The provider's own label, when it offers one."
+  }
+];
+async function call(ctx, method, input) {
+  const result = await ctx.client.rpc.call({ rpcID: RPC_ID, method, input: input ?? {} });
+  return result.output;
+}
+function fail(ctx, message) {
+  ctx.ui.toast.show({ title: "Custom providers", message, variant: "error" });
+}
+function done(ctx, message) {
+  ctx.ui.toast.show({ title: "Custom providers", message, variant: "success" });
+}
+function statusSuffix(provider) {
+  return provider.pending > 0 ? ` (${provider.pending} new model(s) found \u2014 run /reload-models to add them)` : "";
+}
+function cancelled(ctx) {
+  ctx.ui.toast.show({ title: "Custom providers", message: "Cancelled. Nothing was changed.", variant: "info" });
+}
+async function pickProvider(ctx) {
+  const { providers } = await call(ctx, "list");
+  if (providers.length === 0) {
+    ctx.ui.toast.show({
+      message: "You have no custom providers yet. Run /add-provider to add your first one.",
+      variant: "warning"
+    });
+    return void 0;
+  }
+  const selected = await ctx.ui.dialog.select({
+    title: "Which provider?",
+    options: providers.map((provider) => ({
+      title: provider.id,
+      value: provider.id,
+      description: `${provider.baseURL} \u2014 ${provider.models} model(s)${statusSuffix(provider)}`
+    }))
+  });
+  if (!selected) cancelled(ctx);
+  return providers.find((provider) => provider.id === selected);
+}
+async function askApiKey(ctx, title) {
+  return ctx.ui.dialog.prompt({
+    title,
+    description: "Paste the key you got from your provider (it often starts with sk-). Most providers need one. It is saved in opencode's secure key store, never shown again, and you can replace it any time with /edit-provider. Leave empty only for local servers like Ollama."
+  });
+}
+async function promptManualAdd(ctx, input, providerId) {
+  for (; ; ) {
+    const modelIds = await ctx.ui.dialog.prompt({
+      title: "Add models manually",
+      description: "Enter one or more model ids separated by commas. Find these ids on your provider's setup page.",
+      placeholder: "model-a, model-b"
+    });
+    if (modelIds === void 0) {
+      cancelled(ctx);
+      return;
+    }
+    const manual = await call(ctx, "manualAdd", { ...input, modelIds });
+    if (manual.status === "ok") {
+      await ctx.ui.dialog.alert({ title: `Add provider: ${providerId}`, message: manual.message });
+      return;
+    }
+    await ctx.ui.dialog.alert({ title: "Check the model ids", message: manual.message });
+  }
+}
+var ID_PATTERN = /^[a-zA-Z0-9_-]+$/;
+function repairBaseURL(raw) {
+  const trimmed = raw.trim();
+  if (!trimmed || isValidUrl(trimmed)) return void 0;
+  if (/^https?:\/\//i.test(trimmed)) return void 0;
+  if (/^localhost([:/]|$)/i.test(trimmed) || /^127\.0\.0\.1([:/]|$)/i.test(trimmed) || /^\d+\.\d+\.\d+\.\d+([:/]|$)/.test(trimmed)) {
+    return `http://${trimmed}`;
+  }
+  if (/^[a-z0-9][a-z0-9.-]*\.[a-z]{2,}(\/|:|$)/i.test(trimmed)) return `https://${trimmed}`;
+  return void 0;
+}
+async function wizardAdd(ctx) {
+  let providerId = await ctx.ui.dialog.prompt({
+    title: "Step 1 of 5 \u2014 Name for this provider",
+    description: "Any short name you will recognise later. Letters, numbers, hyphens and underscores only. Example: my-proxy",
+    placeholder: "my-proxy"
+  });
+  if (!providerId) {
+    cancelled(ctx);
+    return;
+  }
+  providerId = providerId.trim();
+  if (!ID_PATTERN.test(providerId)) {
+    fail(
+      ctx,
+      `'${providerId}' cannot be used as a name. Use only letters, numbers, hyphens and underscores \u2014 for example my-proxy. Run /add-provider to start again.`
+    );
+    return;
+  }
+  const clash = collisionSuggestion(providerId);
+  if (clash) {
+    const use = await ctx.ui.dialog.confirm({
+      title: "That name is already used by a built-in provider",
+      message: `'${providerId}' belongs to an opencode built-in provider. Using it may change your existing ${providerId} setup.
+
+Use '${clash}' instead?`,
+      label: { confirm: `Use ${clash}`, cancel: "Go back" }
+    });
+    if (!use) {
+      cancelled(ctx);
+      return;
+    }
+    providerId = clash;
+  }
+  const existing = await call(ctx, "list").catch(() => void 0);
+  if (existing?.providers?.some((entry) => entry.id === providerId)) {
+    const replace = await ctx.ui.dialog.confirm({
+      title: "You already have a provider with this name",
+      message: `Adding '${providerId}' again replaces the one you have now, including its model list.
+
+Replace it?`,
+      label: { confirm: "Replace it", cancel: "Go back" }
+    });
+    if (!replace) {
+      cancelled(ctx);
+      return;
+    }
+  }
+  let baseURL;
+  for (; ; ) {
+    baseURL = await ctx.ui.dialog.prompt({
+      title: "Step 2 of 5 \u2014 Base URL",
+      description: 'Paste the address your provider gives you for API access. It is usually on their setup page, labelled "Base URL" or "API endpoint", and looks like https://api.example.com/v1. Something running on this computer can use http://localhost:11434/v1.',
+      placeholder: "https://api.example.com/v1"
+    });
+    if (!baseURL) {
+      cancelled(ctx);
+      return;
+    }
+    const repaired = repairBaseURL(baseURL);
+    if (repaired) {
+      const use = await ctx.ui.dialog.confirm({
+        title: "Did you mean this address?",
+        message: `'${baseURL}' is missing the start of the address.
+
+Use '${repaired}' instead?`,
+        label: { confirm: "Use this address", cancel: "Type it again" }
+      });
+      if (use) {
+        baseURL = repaired;
+        break;
+      }
+      continue;
+    }
+    if (isValidUrl(baseURL)) break;
+    await ctx.ui.dialog.alert({
+      title: "That address could not be read",
+      message: "It must start with https:// (or http:// for something on this computer) and look like https://api.example.com/v1.\n\nNothing was saved \u2014 please try again."
+    });
+  }
+  const flavor = await ctx.ui.dialog.select({
+    title: "Step 3 of 5 \u2014 API type",
+    placeholder: "Pick the first one if you are unsure",
+    options: FLAVOR_OPTIONS
+  });
+  if (!flavor) {
+    cancelled(ctx);
+    return;
+  }
+  const apiKey = await askApiKey(ctx, "Step 4 of 5 \u2014 API key");
+  if (apiKey === void 0) {
+    cancelled(ctx);
+    return;
+  }
+  const displayStyle = await ctx.ui.dialog.select({
+    title: "Step 5 of 5 \u2014 How should models appear in the model list?",
+    options: SIMPLE_OPTIONS
+  });
+  if (!displayStyle) {
+    cancelled(ctx);
+    return;
+  }
+  const input = {
+    providerId,
+    baseURL,
+    flavor,
+    apiKey: apiKey || void 0,
+    displayStyle
+  };
+  if (flavor === "anthropic") {
+    await ctx.ui.dialog.alert({
+      title: "Anthropic needs model names",
+      message: "Anthropic APIs cannot list their models here. Type the model names you use and they will be added with metadata from the public model database."
+    });
+    await promptManualAdd(ctx, input, providerId);
+    return;
+  }
+  let result = await call(ctx, "add", input);
+  while (result.status !== "ok") {
+    if (result.status === "invalid") {
+      await ctx.ui.dialog.alert({ title: `Add provider: ${providerId}`, message: result.message });
+      return;
+    }
+    if (result.status === "confirm_endpoint_reuse") {
+      const confirmed = await ctx.ui.dialog.confirm({
+        title: "That address is already in use",
+        message: `This address is already used by: ${result.usedBy.join(", ")}.
+
+Add another provider on the same address?`,
+        label: { confirm: "Add it anyway", cancel: "Cancel" }
+      });
+      if (confirmed) {
+        result = await call(ctx, "add", { ...input, confirmReuse: true });
+        continue;
+      }
+      cancelled(ctx);
+      return;
+    }
+    const action = await ctx.ui.dialog.select({
+      title: "Could not get the provider's model list",
+      placeholder: result.message,
+      options: [
+        { title: "Try again", value: "retry", description: "Check the address and key, then try the model list again." },
+        { title: "Add models manually", value: "manual", description: "Type the model ids from your provider's setup page." },
+        { title: "Cancel", value: "cancel", description: "Nothing will be saved." }
+      ]
+    });
+    if (!action || action === "cancel") {
+      cancelled(ctx);
+      return;
+    }
+    if (action === "retry") {
+      result = await call(ctx, "add", input);
+      continue;
+    }
+    await promptManualAdd(ctx, input, providerId);
+    return;
+  }
+  await ctx.ui.dialog.alert({ title: `Add provider: ${providerId}`, message: result.message });
+}
+async function wizardCatalogAdd(ctx) {
+  const { sites } = await call(ctx, "catalog.list");
+  if (sites.length === 0) {
+    fail(ctx, "The built-in catalog is empty, so there is nothing to pick. Use /add-provider instead.");
+    return;
+  }
+  const site = await ctx.ui.dialog.select({
+    title: "Pick a provider from the catalog",
+    placeholder: "You still need that provider's API key",
+    options: sites.map((entry) => ({
+      title: entry.name,
+      value: entry.id,
+      description: `${entry.modelCount} model(s) available`
+    }))
+  });
+  if (!site) {
+    cancelled(ctx);
+    return;
+  }
+  const providerId = await ctx.ui.dialog.prompt({
+    title: "Name for this provider",
+    description: "Any short name you will recognise later. Letters, numbers, hyphens and underscores only.",
+    placeholder: site,
+    value: site
+  });
+  if (!providerId) {
+    cancelled(ctx);
+    return;
+  }
+  const models = await ctx.ui.dialog.prompt({
+    title: "Which models? (optional)",
+    description: "Type model names separated by commas, for example claude-sonnet-4-5, gpt-4o. Leave empty to add every model this provider offers \u2014 that is the safe choice."
+  });
+  const apiKey = await askApiKey(ctx, "API key for this provider (paste it if you have one)");
+  const { message } = await call(ctx, "catalog.add", {
+    site,
+    providerId,
+    models: models || void 0,
+    apiKey: apiKey || void 0
+  });
+  await ctx.ui.dialog.alert({ title: `Add from catalog: ${providerId}`, message });
+}
+async function wizardReprobe(ctx) {
+  const provider = await pickProvider(ctx);
+  if (!provider) return;
+  const { message } = await call(ctx, "reprobe", { providerId: provider.id });
+  await ctx.ui.dialog.alert({ title: `Check for new models: ${provider.id}`, message });
+}
+async function wizardApplyReconcile(ctx) {
+  const provider = await pickProvider(ctx);
+  if (!provider) return;
+  const { message } = await call(ctx, "reprobe", { providerId: provider.id });
+  await ctx.ui.dialog.alert({ title: `What was found for ${provider.id}`, message });
+  const choice = await ctx.ui.dialog.select({
+    title: "Apply these changes?",
+    options: [
+      {
+        title: "Apply everything",
+        value: "apply",
+        description: "Add the new models. Models that disappeared stay in your list."
+      },
+      { title: "Keep what I have", value: "keep", description: "Change nothing" }
+    ]
+  });
+  if (!choice) {
+    cancelled(ctx);
+    return;
+  }
+  const applied = await call(ctx, "apply", { providerId: provider.id, mode: choice });
+  await ctx.ui.dialog.alert({ title: `Update ${provider.id}`, message: applied.message });
+}
+async function wizardEdit(ctx) {
+  const provider = await pickProvider(ctx);
+  if (!provider) return;
+  const flavorLabel = FLAVORS[provider.flavor]?.label ?? provider.flavor;
+  const styleLabel = provider.displayStyle === "name" ? "Friendly name" : "Model id";
+  const field = await ctx.ui.dialog.select({
+    title: `What do you want to change for ${provider.id}?`,
+    options: [
+      { title: "Base URL", value: "baseURL", description: `Currently: ${provider.baseURL}` },
+      { title: "API type", value: "flavor", description: `Currently: ${flavorLabel}` },
+      { title: "How models are listed", value: "displayStyle", description: `Currently: ${styleLabel}` },
+      { title: "API key", value: "apiKey", description: "Replace the saved key" }
+    ]
+  });
+  if (!field) {
+    cancelled(ctx);
+    return;
+  }
+  let value;
+  if (field === "flavor") {
+    value = await ctx.ui.dialog.select({ title: "API type", options: FLAVOR_OPTIONS });
+  } else if (field === "displayStyle") {
+    value = await ctx.ui.dialog.select({ title: "How should models appear in the model list?", options: SIMPLE_OPTIONS });
+  } else if (field === "apiKey") {
+    value = await ctx.ui.dialog.prompt({
+      title: "New API key",
+      description: "Paste the new key. Press Esc to keep the current one. It is saved securely and can be replaced again later."
+    });
+  } else {
+    value = await ctx.ui.dialog.prompt({
+      title: "New Base URL",
+      description: "Must start with https:// (or http:// for something on this computer) and usually ends in /v1",
+      value: provider.baseURL
+    });
+  }
+  if (value === void 0 || value === "") {
+    cancelled(ctx);
+    return;
+  }
+  const { message } = await call(ctx, "edit", {
+    providerId: provider.id,
+    [field]: value
+  });
+  await ctx.ui.dialog.alert({ title: `Edit ${provider.id}`, message });
+}
+async function wizardDelete(ctx) {
+  const provider = await pickProvider(ctx);
+  if (!provider) return;
+  const confirmed = await ctx.ui.dialog.confirm({
+    title: "Remove this provider?",
+    message: `Remove '${provider.id}' and its ${provider.models} model(s)?
+
+This cannot be undone. Your other opencode settings are not touched. You can add it again later with /add-provider.`,
+    label: { confirm: "Remove it", cancel: "Keep it" }
+  });
+  if (!confirmed) {
+    cancelled(ctx);
+    return;
+  }
+  const { message } = await call(ctx, "remove", { providerId: provider.id });
+  done(ctx, message);
+}
+async function wizardRefresh(ctx) {
+  const { message } = await call(ctx, "refresh");
+  done(ctx, message);
+}
+async function wizardList(ctx) {
+  const { providers } = await call(ctx, "list");
+  const message = providers.length ? providers.map(
+    (provider) => provider.models === 0 ? `${provider.id} \u2014 NOT READY (no models yet)
+  ${provider.baseURL}
+  Fix it with /edit-provider (check the URL and API key), then /reload-models` : `${provider.id} \u2014 ${provider.models} model(s) ready${statusSuffix(provider)}
+  ${provider.baseURL}`
+  ).join("\n\n") : "You have no custom providers yet. Run /add-provider to add your first one.";
+  await ctx.ui.dialog.alert({ title: "Your custom providers", message });
+}
+var COMMANDS = [
+  { name: "add-provider", title: "Add a provider", description: "Set up a new API provider step by step", run: wizardAdd },
+  { name: "list-custom-providers", title: "List my providers", description: "Show every custom provider and its models", run: wizardList },
+  {
+    name: "check-for-new-models",
+    aliases: ["reprobe-models"],
+    title: "Check for new models",
+    description: "Ask your provider whether it has new models",
+    run: wizardReprobe
+  },
+  { name: "reload-models", title: "Reload all models", description: "Refresh every provider from its own address", run: wizardRefresh },
+  { name: "add-known-provider", aliases: ["add-from-catalog"], title: "Add a known provider", description: "Pick a provider from the built-in list", run: wizardCatalogAdd },
+  { name: "review-model-changes", aliases: ["apply-reconcile"], title: "Review model changes", description: "See what changed and choose what to keep", run: wizardApplyReconcile },
+  { name: "edit-provider", title: "Edit a provider", description: "Change its address, API type, key, or how models are named", run: wizardEdit },
+  { name: "delete-provider", title: "Delete a provider", description: "Remove a provider and its models", run: wizardDelete }
+];
+var setup = (ctx) => {
+  ctx.keymap.layer(() => ({
+    mode: "global",
+    commands: COMMANDS.map((command) => ({
+      id: `${id}.${command.name}`,
+      title: command.title,
+      description: command.description,
+      group: "Custom providers",
+      palette: true,
+      slash: {
+        name: command.name,
+        aliases: "aliases" in command ? [...command.aliases] : void 0
+      },
+      run: async () => {
+        try {
+          await command.run(ctx);
+        } catch (error) {
+          await ctx.ui.dialog.alert({
+            title: "Something went wrong",
+            message: `The action did not finish and nothing was changed.
+Run /list-custom-providers to see the current state, then try again.
+
+Technical detail (for bug reports): ${error instanceof Error ? error.message : String(error)}`
+          });
+        }
+      }
+    }))
+  }));
+};
+
 // src/endpoint.ts
-function normalizeModelId(id2) {
-  let normalized = id2.toLowerCase();
+function normalizeModelId(id3) {
+  let normalized = id3.toLowerCase();
   if (normalized.startsWith("models/")) {
     normalized = normalized.slice(7);
   }
@@ -80,8 +620,13 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import * as os from "node:os";
 import { createRequire } from "node:module";
-var require2 = createRequire(import.meta.url);
-var { version: PKG_VERSION } = require2("../package.json");
+var PKG_VERSION = (() => {
+  try {
+    return createRequire(import.meta.url)("../package.json").version ?? "0.0.0";
+  } catch {
+    return "0.0.0";
+  }
+})();
 var MODELS_DEV_URL = "https://models.dev/api.json";
 var CACHE_TTL = 6 * 60 * 60 * 1e3;
 function cacheDir() {
@@ -180,7 +725,7 @@ async function getCatalog() {
   return catalogPromise;
 }
 function summarizeCatalog(catalog) {
-  return Object.values(catalog).filter((p) => p && typeof p.id === "string" && p.models && Object.keys(p.models).length > 0).map((p) => ({
+  return Object.values(catalog).filter((p) => p && typeof p.id === "string" && p.api && isValidUrl(p.api) && p.models && Object.keys(p.models).length > 0).map((p) => ({
     id: p.id,
     name: p.name || p.id,
     api: p.api,
@@ -250,8 +795,8 @@ var PREFIX = [
   ["mistral", { context: 128e3, output: 8192, reasoning: false, image: false }],
   ["mixtral", { context: 64e3, output: 8192, reasoning: false, image: false }]
 ];
-function matchLocalRule(id2) {
-  const key = normalizeModelId(id2).split("@")[0].replace(/\[.*\]$/, "");
+function matchLocalRule(id3) {
+  const key = normalizeModelId(id3).split("@")[0].replace(/\[.*\]$/, "");
   const exact = EXACT[key];
   if (exact) return { meta: exact, pattern: key };
   let best = null;
@@ -293,8 +838,8 @@ function loadCustomRules() {
       return empty;
     }
     const valid = {};
-    for (const [id2, rule] of Object.entries(exact)) {
-      if (isValidRule(rule)) valid[id2] = rule;
+    for (const [id3, rule] of Object.entries(exact)) {
+      if (isValidRule(rule)) valid[id3] = rule;
     }
     rulesCache = { file, mtimeMs, rules: valid };
     return valid;
@@ -303,77 +848,6 @@ function loadCustomRules() {
     rulesCache = { file, mtimeMs, rules: empty };
     return empty;
   }
-}
-
-// src/flavors.ts
-var FLAVORS = {
-  "openai-chat": {
-    flavor: "openai-chat",
-    label: "OpenAI Chat Completions",
-    description: "OpenAI-compatible /models endpoint (default)",
-    listPaths: ["/models"],
-    listShape: "openai-list",
-    fallbackLimits: { context: 128e3, output: 4096 }
-  },
-  "openai-responses": {
-    flavor: "openai-responses",
-    label: "OpenAI Responses",
-    description: "Responses-style gateways with an OpenAI /models list",
-    listPaths: ["/models"],
-    listShape: "openai-list",
-    fallbackLimits: { context: 128e3, output: 4096 }
-  },
-  anthropic: {
-    flavor: "anthropic",
-    label: "Anthropic Messages",
-    description: "No list API \u2014 add from catalog or by hand",
-    listPaths: [],
-    listShape: "none",
-    fallbackLimits: { context: 2e5, output: 32e3 }
-  },
-  gemini: {
-    flavor: "gemini",
-    label: "Gemini",
-    description: "Google Generative Language list API",
-    listPaths: ["/v1beta/models", "/models"],
-    listShape: "gemini-list",
-    fallbackLimits: { context: 1e6, output: 64e3 }
-  },
-  ollama: {
-    flavor: "ollama",
-    label: "Ollama",
-    description: "Local Ollama daemon (/api/tags)",
-    listPaths: ["/api/tags", "/models"],
-    listShape: "ollama-tags",
-    fallbackLimits: { context: 128e3, output: 4096 }
-  }
-};
-var DEFAULT_FLAVOR = "openai-chat";
-function parseFlavor(value) {
-  if (!value) return null;
-  const v = value.trim().toLowerCase().replaceAll("_", "-");
-  const found = Object.keys(FLAVORS).find((f) => f === v);
-  return found ?? null;
-}
-var BUILT_IN_IDS = /* @__PURE__ */ new Set([
-  "openai",
-  "anthropic",
-  "google",
-  "gemini",
-  "deepseek",
-  "xai",
-  "groq",
-  "ollama",
-  "openrouter",
-  "azure",
-  "bedrock",
-  "vertex"
-]);
-function collisionSuggestion(providerId) {
-  if (BUILT_IN_IDS.has(providerId.toLowerCase())) {
-    return `${providerId}-custom`;
-  }
-  return null;
 }
 
 // src/deep-probe.ts
@@ -397,9 +871,9 @@ function authHeaders(apiKey) {
   if (apiKey) headers["Authorization"] = `Bearer ${apiKey}`;
   return headers;
 }
-async function fetchModelDetail(modelsUrl, id2, apiKey) {
+async function fetchModelDetail(modelsUrl, id3, apiKey) {
   const raw = await getJson(
-    `${modelsUrl.replace(/\/+$/, "")}/${encodeURIComponent(id2)}`,
+    `${modelsUrl.replace(/\/+$/, "")}/${encodeURIComponent(id3)}`,
     authHeaders(apiKey),
     8e3
   );
@@ -449,9 +923,9 @@ function patchFromRecord(raw) {
   }
   return patch;
 }
-async function fetchLitellmInfo(origin, id2, apiKey) {
+async function fetchLitellmInfo(origin, id3, apiKey) {
   const raw = await getJson(
-    `${origin}/model/info?model=${encodeURIComponent(id2)}`,
+    `${origin}/model/info?model=${encodeURIComponent(id3)}`,
     authHeaders(apiKey),
     8e3
   );
@@ -639,6 +1113,13 @@ async function probeDeveloperRole(baseURL, apiKey) {
 }
 
 // src/probe.ts
+function isLocalHost(host) {
+  if (host === "localhost" || host === "::1" || host === "[::1]" || host === "0.0.0.0") return true;
+  if (host.endsWith(".local")) return true;
+  if (host.startsWith("127.") || host.startsWith("10.") || host.startsWith("192.168.")) return true;
+  const second = /^172\.(\d+)\./.exec(host);
+  return second !== null && Number(second[1]) >= 16 && Number(second[1]) <= 31;
+}
 function buildCandidateUrls(baseURL) {
   const out = [];
   const push = (u) => {
@@ -653,7 +1134,7 @@ function buildCandidateUrls(baseURL) {
       push(new URL(`${cleanPath}/v1`, url.origin).toString());
     }
     const host = url.hostname.toLowerCase();
-    if (url.protocol === "http:" && host !== "localhost" && host !== "127.0.0.1" && host !== "::1") {
+    if (url.protocol === "http:" && !isLocalHost(host)) {
       const https = new URL(url.toString());
       https.protocol = "https:";
       push(https.toString());
@@ -750,8 +1231,8 @@ function normalizeListShape(raw, shape) {
       const rec = m;
       const name = rec["name"];
       if (typeof name !== "string" || name.length === 0) continue;
-      const id2 = name.startsWith("models/") ? name.slice(7) : name;
-      const item = { id: id2 };
+      const id3 = name.startsWith("models/") ? name.slice(7) : name;
+      const item = { id: id3 };
       if (typeof rec["displayName"] === "string") item.name = rec["displayName"];
       if (typeof rec["inputTokenLimit"] === "number") item.context_length = rec["inputTokenLimit"];
       if (typeof rec["outputTokenLimit"] === "number") item.max_output_tokens = rec["outputTokenLimit"];
@@ -763,14 +1244,14 @@ function normalizeListShape(raw, shape) {
 }
 function resolveModel(item, lookup, flavor, customs) {
   const spec = FLAVORS[flavor];
-  const id2 = sanitizeModelId(item.id);
-  const key = normalizeModelId(id2);
+  const id3 = sanitizeModelId(item.id);
+  const key = normalizeModelId(id3);
   const meta = lookup.get(key);
   const custom = customs[key];
-  const rule = custom ? { meta: custom, pattern: `custom:${key}` } : matchLocalRule(id2);
+  const rule = custom ? { meta: custom, pattern: `custom:${key}` } : matchLocalRule(id3);
   const caps = parseCapabilities(item);
   const levels = parseEffortOptions(item);
-  const probed = { id: id2 };
+  const probed = { id: id3 };
   if (item.name && item.name !== item.id) probed.name = item.name;
   else if (meta) probed.name = meta.name;
   const epContext = [item.context_window, item.max_model_len, item.context_length].find((v) => typeof v === "number");
@@ -813,9 +1294,6 @@ function resolveModel(item, lookup, flavor, customs) {
   } else if (rule) {
     probed.reasoning = rule.meta.reasoning;
     probed.reasoningSource = "local-rules";
-  } else {
-    probed.reasoning = true;
-    probed.reasoningSource = "default";
   }
   if (levels && levels.length > 0) probed.reasoningLevels = levels;
   const vision = item.capabilities?.vision === true;
@@ -859,9 +1337,12 @@ function modelsUrlFor(candidate, flavor) {
     return candidate;
   }
 }
-async function probeEndpoint(baseURL, apiKey, flavor = DEFAULT_FLAVOR) {
+async function probeEndpointOutcome(baseURL, apiKey, flavor = DEFAULT_FLAVOR) {
   if (!isValidUrl(baseURL)) {
     throw new Error("Invalid Base URL. Please enter a full URL (including https://).");
+  }
+  if (FLAVORS[flavor].listShape === "none") {
+    return { models: [], baseURL, listUnsupported: true };
   }
   const lookup = await getLookupMap();
   const customs = loadCustomRules();
@@ -883,24 +1364,30 @@ async function probeEndpoint(baseURL, apiKey, flavor = DEFAULT_FLAVOR) {
           apiKey,
           flavor
         });
-        return deep.map((item) => resolveModel(item, lookup, flavor, customs));
+        return {
+          models: deep.map((item) => resolveModel(item, lookup, flavor, customs)),
+          baseURL: candidate,
+          listUnsupported: false
+        };
       }
     } catch (error) {
       lastError = sanitizeErrorMessage(error);
     }
   }
-  if (FLAVORS[flavor].listShape === "none") return [];
   throw new Error(
     `Probe failed for ${baseURL}` + (lastError ? `: ${lastError}` : ". No models found \u2014 retry or add models manually.")
   );
 }
+async function probeEndpoint(baseURL, apiKey, flavor = DEFAULT_FLAVOR) {
+  return (await probeEndpointOutcome(baseURL, apiKey, flavor)).models;
+}
 function probedToEnriched(probed, displayStyle) {
+  const limit = {};
+  if (hasEvidence(probed.contextSource)) limit.context = probed.context;
+  if (hasEvidence(probed.maxOutputSource)) limit.output = probed.maxOutput;
   const model = {
     name: displayStyle === "slug" ? probed.id : probed.name ?? probed.id,
-    limit: {
-      context: probed.context ?? 128e3,
-      output: probed.maxOutput ?? 4096
-    },
+    limit,
     modalities: probed.image ? { input: ["text", "image"], output: ["text"] } : { input: ["text"], output: ["text"] }
   };
   if (probed.reasoning) model.reasoning = true;
@@ -915,21 +1402,33 @@ function probedToEnriched(probed, displayStyle) {
   }
   return model;
 }
-function fmtNum(n) {
-  return n === void 0 ? "?" : String(n);
+function hasEvidence(source) {
+  return source !== void 0 && source !== "default" && source !== "api-fallback";
 }
-function describeProbed(p) {
-  const parts = [
-    p.id,
-    `ctx ${fmtNum(p.context)} [${p.contextSource ?? "?"}]`,
-    `out ${fmtNum(p.maxOutput)} [${p.maxOutputSource ?? "?"}]`,
-    `reasoning ${p.reasoning ? p.reasoningLevels?.length ? `(${p.reasoningLevels.join("/")})` : "[+]" : "[-]"} [${p.reasoningSource ?? "?"}]`,
-    `image ${p.image ? "[+]" : "[-]"} [${p.imageSource ?? "?"}]`
-  ];
-  if (p.cost && p.costSource) {
-    parts.push(`cost $${p.cost.input}/$${p.cost.output} [${p.costSource}]`);
+function describeProbed(probed) {
+  const lines = [`Model: ${probed.id}`];
+  if (hasEvidence(probed.contextSource)) {
+    lines.push(`  Context window: ${probed.context?.toLocaleString("en-US") ?? "unknown"} tokens${tag(probed.contextSource)}`);
   }
-  return parts.join(" | ");
+  if (hasEvidence(probed.maxOutputSource)) {
+    lines.push(`  Longest reply: ${probed.maxOutput?.toLocaleString("en-US") ?? "unknown"} tokens${tag(probed.maxOutputSource)}`);
+  }
+  if (probed.reasoning !== void 0) {
+    const levels = probed.reasoningLevels?.length ? ` (${probed.reasoningLevels.join("/")})` : "";
+    lines.push(`  Thinking: ${probed.reasoning ? "supported" : "not supported"}${levels}${tag(probed.reasoningSource)}`);
+  }
+  if (hasEvidence(probed.imageSource)) {
+    lines.push(`  Image input: ${probed.image ? "supported" : "not supported"}${tag(probed.imageSource)}`);
+  }
+  if (probed.cost) {
+    lines.push(
+      `  Price: $${probed.cost.input} per million input tokens, $${probed.cost.output} per million output tokens${tag(probed.costSource)}`
+    );
+  }
+  return lines.join("\n");
+}
+function tag(source) {
+  return source === "detected" || source === void 0 ? "" : ` [${source}]`;
 }
 function catalogToProbed(model) {
   const probed = { id: model.id, name: model.name };
@@ -969,16 +1468,16 @@ async function buildCatalogModels(siteId, modelIds, displayStyle) {
   const resolved = [];
   const matched = /* @__PURE__ */ new Set();
   for (const model of Object.values(site.models ?? {})) {
-    const id2 = sanitizeModelId(model.id);
+    const id3 = sanitizeModelId(model.id);
     if (wanted) {
-      const hit = wanted.has(id2) || wanted.has(model.id);
+      const hit = wanted.has(id3) || wanted.has(model.id);
       if (!hit) continue;
-      if (wanted.has(id2)) matched.add(id2);
+      if (wanted.has(id3)) matched.add(id3);
       if (wanted.has(model.id)) matched.add(model.id);
     }
-    const probed = catalogToProbed({ ...model, id: id2 });
+    const probed = catalogToProbed({ ...model, id: id3 });
     resolved.push(probed);
-    models[id2] = probedToEnriched(probed, displayStyle);
+    models[id3] = probedToEnriched(probed, displayStyle);
   }
   const missing = wanted ? [...wanted].filter((raw) => !matched.has(raw)) : [];
   return { baseURL: site.api, models, resolved, missing };
@@ -1003,8 +1502,8 @@ async function discoverAndEnrich(baseURL, apiKey, displayStyle = "slug", flavor 
   const probed = await probeEndpoint(baseURL, apiKey, flavor);
   const result = {};
   for (const p of probed) {
-    const id2 = sanitizeModelId(p.id);
-    result[id2] = probedToEnriched(p, displayStyle);
+    const id3 = sanitizeModelId(p.id);
+    result[id3] = probedToEnriched(p, displayStyle);
   }
   return result;
 }
@@ -1027,7 +1526,7 @@ function shouldDiscover(provider) {
 function hasImage(model) {
   return model.modalities?.input.includes("image") ?? false;
 }
-function describeUpdate(id2, current, fresh) {
+function describeUpdate(id3, current, fresh) {
   const parts = [];
   if (current.limit.context !== fresh.limit.context) {
     parts.push(`context ${current.limit.context} -> ${fresh.limit.context}`);
@@ -1045,7 +1544,7 @@ function describeUpdate(id2, current, fresh) {
     parts.push(hasImage(fresh) ? "image [+]" : "image [-]");
   }
   if (parts.length === 0) return null;
-  return `${id2}: ${parts.join(", ")}`;
+  return `${id3}: ${parts.join(", ")}`;
 }
 function mergeAppliedModel(stored, fresh) {
   const merged = {
@@ -1079,15 +1578,15 @@ function diffModels(current, fresh, displayStyle) {
     seen.add(p.id);
     const stored = current[p.id];
     if (!stored) {
-      changes.push({ id: p.id, kind: "added", detail: `${p.id}: new model` });
+      changes.push({ id: p.id, kind: "added", detail: `${p.id}: new model`, searchText: `${p.id} added` });
       continue;
     }
     const detail = describeUpdate(p.id, stored, probedToEnriched(p, displayStyle));
-    if (detail) changes.push({ id: p.id, kind: "updated", detail });
+    if (detail) changes.push({ id: p.id, kind: "updated", detail, searchText: `${p.id} updated` });
   }
-  for (const id2 of Object.keys(current)) {
-    if (!seen.has(id2)) {
-      changes.push({ id: id2, kind: "removed", detail: `${id2}: vanished upstream (unsupported)` });
+  for (const id3 of Object.keys(current)) {
+    if (!seen.has(id3)) {
+      changes.push({ id: id3, kind: "removed", detail: `${id3}: vanished upstream (unsupported)`, searchText: `${id3} removed` });
     }
   }
   return changes;
@@ -1105,10 +1604,10 @@ function applyDecisions(current, fresh, decisions, displayStyle) {
       delete next[p.id];
     }
   }
-  for (const id2 of Object.keys(current)) {
-    if (!freshById.has(id2)) {
-      const decision = decisions[id2] ?? "keep";
-      if (decision !== "keep") delete next[id2];
+  for (const id3 of Object.keys(current)) {
+    if (!freshById.has(id3)) {
+      const decision = decisions[id3] ?? "keep";
+      if (decision !== "keep") delete next[id3];
     }
   }
   return next;
@@ -1163,7 +1662,7 @@ async function reloadAllProviders(providers) {
   if (dynamicProviders.length === 0) return result;
   clearModelsDevCache();
   const outcomes = await chunkedAllSettled(
-    dynamicProviders.map(([id2, cfg]) => () => reloadOneProvider(id2, cfg)),
+    dynamicProviders.map(([id3, cfg]) => () => reloadOneProvider(id3, cfg)),
     4
   );
   for (const outcome of outcomes) {
@@ -1328,7 +1827,7 @@ function editModelField(models, modelId, field, value) {
     }
     case "context":
     case "output": {
-      if (!model.limit) return `Model '${modelId}' has no 'limit' configured.`;
+      model.limit ??= {};
       const n = Number(value);
       if (!Number.isInteger(n) || n <= 0) {
         return `'${field}' must be a positive integer (got '${value}').`;
@@ -1359,13 +1858,13 @@ function deleteModels(models, ids) {
   const deleted = [];
   const missing = [];
   for (const raw of ids) {
-    const id2 = raw.trim();
-    if (!id2) continue;
-    if (models[id2]) {
-      delete models[id2];
-      deleted.push(id2);
+    const id3 = raw.trim();
+    if (!id3) continue;
+    if (models[id3]) {
+      delete models[id3];
+      deleted.push(id3);
     } else {
-      missing.push(id2);
+      missing.push(id3);
     }
   }
   return { deleted, missing };
@@ -1388,11 +1887,11 @@ async function migrateInlineKey(provider, providerId, storeApiKey) {
 // src/opencode-client.ts
 function createTuiBridge(apiClient) {
   return {
-    async setApiKey(id2, key) {
-      await apiClient.auth.set({ providerID: id2, auth: { type: "api", key } });
+    async setApiKey(id3, key) {
+      await apiClient.auth.set({ providerID: id3, auth: { type: "api", key } });
     },
-    async removeApiKey(id2) {
-      await apiClient.auth.remove({ providerID: id2 });
+    async removeApiKey(id3) {
+      await apiClient.auth.remove({ providerID: id3 });
     },
     async updateProviders(providers) {
       const body = { provider: providers };
@@ -1406,7 +1905,6 @@ function createTuiBridge(apiClient) {
 }
 
 // src/tui.ts
-var id = "opencode-custom-providers";
 function showPrompt(api, title, placeholder) {
   return new Promise((resolve) => {
     api.ui.dialog.replace(
@@ -1575,7 +2073,7 @@ var tui = async (api) => {
             api.ui.toast({ message: `Catalog add failed: ${message}`, variant: "error" });
             return;
           }
-          const entry = {
+          const entry2 = {
             name: providerId2,
             npm: "@ai-sdk/openai-compatible",
             api: built.baseURL,
@@ -1585,8 +2083,8 @@ var tui = async (api) => {
             models: built.models
           };
           try {
-            await persistProviderApiKey(entry, providerId2, apiKey2, async (id2, key) => {
-              await bridge.setApiKey(id2, key);
+            await persistProviderApiKey(entry2, providerId2, apiKey2, async (id3, key) => {
+              await bridge.setApiKey(id3, key);
               return true;
             });
           } catch (error) {
@@ -1594,11 +2092,11 @@ var tui = async (api) => {
             api.ui.toast({ message: `Failed to persist API key: ${message}`, variant: "error" });
             return;
           }
-          catProviders[providerId2] = entry;
+          catProviders[providerId2] = entry2;
           await bridge.updateProviders(catProviders);
-          const stored = Object.keys(built.models).length;
+          const stored2 = Object.keys(built.models).length;
           api.ui.toast({
-            message: `Added ${stored} model(s)${built.missing.length > 0 ? `, unknown: ${built.missing.join(", ")}` : ""}.`,
+            message: `Added ${stored2} model(s)${built.missing.length > 0 ? `, unknown: ${built.missing.join(", ")}` : ""}.`,
             variant: "success"
           });
           return;
@@ -1656,8 +2154,8 @@ var tui = async (api) => {
             result.providerEntry,
             providerId,
             apiKey,
-            async (id2, key) => {
-              await bridge.setApiKey(id2, key);
+            async (id3, key) => {
+              await bridge.setApiKey(id3, key);
               return true;
             }
           );
@@ -1668,7 +2166,20 @@ var tui = async (api) => {
         }
         providers[providerId] = result.providerEntry;
         await bridge.updateProviders(providers);
-        api.ui.toast({ message: result.message, variant: "success" });
+        const entry = result.providerEntry;
+        const stored = Object.keys(entry.models ?? {}).length;
+        const learned = [];
+        for (const model of Object.values(entry.models ?? {})) {
+          const limits = model.limit;
+          if (limits?.context) learned.push("context");
+          if (limits?.output) learned.push("max output");
+          break;
+        }
+        const detail = learned.length ? ` Learned: ${[...new Set(learned)].join(", ")}.` : " No extra details were measured for it.";
+        api.ui.toast({
+          message: `${result.message}${detail} Run /model to pick one of its ${stored} model${stored === 1 ? "" : "s"}.`,
+          variant: "success"
+        });
       }
     },
     {
@@ -1685,7 +2196,7 @@ var tui = async (api) => {
           api.ui.toast({ message: "No providers configured.", variant: "warning" });
           return;
         }
-        const providerId = await showSelect(api, "Provider to re-probe", ids.map((id2) => ({ title: id2, value: id2 })));
+        const providerId = await showSelect(api, "Provider to re-probe", ids.map((id3) => ({ title: id3, value: id3 })));
         if (!providerId) return;
         const provider = providers[providerId];
         api.ui.toast({ message: `Probing ${providerId}...`, variant: "info" });
@@ -1702,11 +2213,15 @@ var tui = async (api) => {
           return;
         }
         const mode = await showSelect(api, `${rep.changes.length} change(s) found`, [
-          { title: "Apply all", value: "all", description: "Take every fresh value, keep vanished" },
           { title: "Review each", value: "each", description: "Decide per model" },
+          { title: "Keep what I have (safest)", value: "keep", description: "Leave every model as it is" },
           { title: "Cancel", value: "cancel", description: "Change nothing" }
         ]);
         if (!mode || mode === "cancel") return;
+        if (mode === "keep") {
+          api.ui.toast({ message: "Kept what you have. Nothing was changed.", variant: "info" });
+          return;
+        }
         const decisions = {};
         if (mode === "each") {
           const freshById = new Map(rep.fresh.map((p) => [p.id, p]));
@@ -1715,8 +2230,8 @@ var tui = async (api) => {
             const source = fresh ? `
 ${describeProbed(fresh)}` : "";
             const choice = await showSelect(api, `[${change.kind}] ${change.id}`, [
-              { title: "Apply", value: "apply", description: `${change.detail}${source}` },
               { title: "Keep stored", value: "keep", description: "Leave the current entry unchanged" },
+              { title: "Apply update", value: "apply", description: `${change.detail}${source}` },
               { title: "Remove", value: "remove", description: "Delete the stored entry" }
             ]);
             if (!choice) return;
@@ -1743,13 +2258,13 @@ ${describeProbed(fresh)}` : "";
           api.ui.toast({ message: "No providers configured.", variant: "warning" });
           return;
         }
-        const providerId = await showSelect(api, "Provider to edit", ids.map((id2) => ({ title: id2, value: id2 })));
+        const providerId = await showSelect(api, "Provider to edit", ids.map((id3) => ({ title: id3, value: id3 })));
         if (!providerId) return;
         const provider = providers[providerId];
         if (provider.options?.apiKey) {
           try {
-            const migration = await migrateInlineKey(provider, providerId, async (id2, key) => {
-              await bridge.setApiKey(id2, key);
+            const migration = await migrateInlineKey(provider, providerId, async (id3, key) => {
+              await bridge.setApiKey(id3, key);
               return true;
             });
             if (migration.migrated) {
@@ -1832,8 +2347,8 @@ ${describeProbed(fresh)}` : "";
           if (raw === null) return;
           const key = raw.trim() || void 0;
           try {
-            await persistProviderApiKey(provider, providerId, key, async (id2, k) => {
-              await bridge.setApiKey(id2, k);
+            await persistProviderApiKey(provider, providerId, key, async (id3, k) => {
+              await bridge.setApiKey(id3, k);
               return true;
             });
           } catch (error) {
@@ -1870,7 +2385,7 @@ ${describeProbed(fresh)}` : "";
             api.ui.toast({ message: "No models stored.", variant: "warning" });
             return;
           }
-          const modelId = await showSelect(api, "Model to edit", modelIds.map((id2) => ({ title: id2, value: id2 })));
+          const modelId = await showSelect(api, "Model to edit", modelIds.map((id3) => ({ title: id3, value: id3 })));
           if (!modelId) return;
           const field = await showSelect(api, `Field of ${modelId}`, [
             { title: "Display name", value: "name" },
@@ -1881,10 +2396,7 @@ ${describeProbed(fresh)}` : "";
           ]);
           if (!field) return;
           const m = models[modelId];
-          if ((field === "context" || field === "output") && !m.limit) {
-            api.ui.toast({ message: `Model '${modelId}' has no 'limit' configured.`, variant: "error" });
-            return;
-          }
+          m.limit ??= {};
           const current = field === "name" ? m.name : field === "context" ? String(m.limit.context) : field === "output" ? String(m.limit.output) : field === "reasoning" ? String(!!m.reasoning) : String(m.modalities?.input.includes("image") ?? false);
           const raw = await showPrompt(api, `${field} (current: ${current})`);
           if (raw === null) return;
@@ -1917,12 +2429,12 @@ ${lines.slice(0, 10).join("\n")}${lines.length > 10 ? `
           const stored = getStoredModels(provider);
           let added = 0;
           const skipped = [];
-          for (const { id: id2, model } of previews) {
-            if (!id2 || stored[id2]) {
-              skipped.push(id2);
+          for (const { id: id3, model } of previews) {
+            if (!id3 || stored[id3]) {
+              skipped.push(id3);
               continue;
             }
-            stored[id2] = model;
+            stored[id3] = model;
             added++;
           }
           provider.models = stored;
@@ -1942,7 +2454,7 @@ ${lines.slice(0, 10).join("\n")}${lines.length > 10 ? `
           const raw = await showPrompt(api, "Model ids to delete (comma-separated)");
           if (!raw) return;
           const candidates = raw.split(",").map((s) => s.trim()).filter((s) => s.length > 0);
-          const unknown = candidates.filter((id2) => !models[id2]);
+          const unknown = candidates.filter((id3) => !models[id3]);
           if (unknown.length > 0) {
             api.ui.toast({ message: `Unknown model(s): ${unknown.join(", ")}.`, variant: "error" });
             return;
@@ -1975,7 +2487,7 @@ ${candidates.join(", ")}`
           api.ui.toast({ message: "No providers configured.", variant: "warning" });
           return;
         }
-        const providerId = await showSelect(api, "Provider to delete", ids.map((id2) => ({ title: id2, value: id2 })));
+        const providerId = await showSelect(api, "Provider to delete", ids.map((id3) => ({ title: id3, value: id3 })));
         if (!providerId) return;
         const ok = await showConfirm(api, "Delete provider", `Remove '${providerId}' and all its models?`);
         if (!ok) return;
@@ -1990,7 +2502,7 @@ ${candidates.join(", ")}`
     }
   ]);
 };
-var tui_default = { id, tui };
+var tui_default = { id, tui, setup };
 export {
   tui_default as default,
   id,

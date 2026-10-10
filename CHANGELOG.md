@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.1-stable] - 2026-10-10
+
+OpenCode 2 support. The default export now serves both hosts: `{ id, server, setup }`.
+
+### Added
+- OpenCode 2 server plugin (`src/server-v2.ts`): provider discovery through the v2 provider registry, credential-backed API keys, and eight agent tools
+- OpenCode 2 TUI plugin (`src/tui-v2.ts`): palette and slash commands for add, catalog add, re-probe, reconcile, edit, delete, refresh, list
+- Wizard state persists through host storage; the server exposes it to the TUI over RPC
+- `mergeDiscoveredIntoStored` keeps user and catalog metadata when a re-probe omits a field
+
+### Changed
+- Comments trimmed across `src/` to the minimal senior style
+
 ## [1.0.0] - 2026-10-10
 
 First release as an independent project (rebuilt from opencode-dynamic-custom-providers).

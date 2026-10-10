@@ -96,9 +96,10 @@ afterEach(() => {
 })
 
 describe("summarizeCatalog", () => {
-  it("sorts by name and skips model-less sites", () => {
+  it("sorts by name and skips sites without a usable address or models", () => {
     const sites = summarizeCatalog(CATALOG as never)
-    expect(sites.map(s => s.id)).toEqual(["site-a", "site-b", "no-api"])
+    // B7: a site the catalog cannot add (no api URL) must never be offered.
+    expect(sites.map(s => s.id)).toEqual(["site-a", "site-b"])
     expect(sites[0]).toMatchObject({ name: "Alpha", modelCount: 1 })
   })
 })
@@ -106,7 +107,7 @@ describe("summarizeCatalog", () => {
 describe("listCatalogSites", () => {
   it("fetches and summarizes without probing", async () => {
     const sites = await listCatalogSites()
-    expect(sites.map(s => s.id)).toEqual(["site-a", "site-b", "no-api"])
+    expect(sites.map(s => s.id)).toEqual(["site-a", "site-b"])
   })
 })
 
@@ -192,7 +193,7 @@ describe("catalog memo (FIX4)", () => {
     expect(second).toBe(first)
     const sites = await listCatalogSites()
     expect(calls).toBe(1)
-    expect(sites.map(s => s.id)).toEqual(["site-a", "site-b", "no-api"])
+    expect(sites.map(s => s.id)).toEqual(["site-a", "site-b"])
     // Memo never leaks across clears: fresh network fetch after clear.
     fs.rmSync(path.join(home, ".cache"), { recursive: true, force: true })
     clearModelsDevCache()

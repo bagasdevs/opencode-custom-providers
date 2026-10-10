@@ -8,6 +8,8 @@ coverage/
 .gitnexus
 config.json
 .opencode/
+.omo/
+ref/
 TODO.md
 AGENTS.md
 CLAUDE.md

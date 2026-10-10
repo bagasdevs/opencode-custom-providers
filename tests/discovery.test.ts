@@ -52,8 +52,8 @@ describe("discoverAndEnrich flavor routing", () => {
     const model = out[TEST_MODEL]
     expect(model).toBeDefined()
     expect(model.name).toBe(TEST_MODEL)
-    expect(model.limit).toEqual({ context: 128_000, output: 4_096 })
-    expect(model.reasoning).toBe(true)
+    expect(model.limit).toEqual({})
+    expect(model.reasoning).toBeUndefined()
   })
 
   it("uses the passed flavor's fallback limits (gemini ≠ openai-chat)", async () => {
@@ -66,8 +66,8 @@ describe("discoverAndEnrich flavor routing", () => {
     const out = await discoverAndEnrich("https://g.example", undefined, "slug", "gemini")
     const model = out[TEST_MODEL]
     expect(model).toBeDefined()
-    expect(model.limit).toEqual({ context: 1_000_000, output: 64_000 })
-    expect(model.reasoning).toBe(true)
+    expect(model.limit).toEqual({})
+    expect(model.reasoning).toBeUndefined()
   })
 
   it("short-circuits list-less flavors (anthropic) with no endpoint traffic", async () => {
