@@ -628,7 +628,7 @@ export const setup = async (ctx: V2Context): Promise<void> => {
       }
       input.baseURL = normalizeBaseUrl(input.baseURL)
       if (!isValidUrl(input.baseURL)) {
-        return { status: "invalid", message: "Enter a complete address starting with https:// (or localhost http://)." }
+        return { status: "invalid", message: "Enter a complete address starting with https:// (or http:// for a local server)." }
       }
       const clash = collisionSuggestion(input.providerId)
       if (clash && !input.overwrite) {

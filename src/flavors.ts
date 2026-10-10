@@ -55,7 +55,7 @@ export const FLAVORS: Record<ProviderFlavor, FlavorSpec> = {
   },
   ollama: {
     flavor: "ollama",
-    label: "Ollama (on this computer)",
+    label: "Ollama (local server)",
     description: "A local Ollama install, usually http://localhost:11434",
     listPaths: ["/api/tags", "/models"],
     listShape: "ollama-tags",

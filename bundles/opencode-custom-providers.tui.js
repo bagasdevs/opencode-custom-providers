@@ -34,7 +34,7 @@ var FLAVORS = {
   },
   ollama: {
     flavor: "ollama",
-    label: "Ollama (on this computer)",
+    label: "Ollama (local server)",
     description: "A local Ollama install, usually http://localhost:11434",
     listPaths: ["/api/tags", "/models"],
     listShape: "ollama-tags",
@@ -186,7 +186,7 @@ async function pickProvider(ctx) {
 async function askApiKey(ctx, title) {
   return ctx.ui.dialog.prompt({
     title,
-    description: "Paste the key you got from your provider (it often starts with sk-). Most providers need one. It is saved in opencode's secure key store, never shown again, and you can replace it any time with /edit-provider. Leave empty only for local servers like Ollama."
+    description: "Paste the key you got from your provider (it often starts with sk-). Most providers need one. It is saved in opencode's secure key store, never shown again, and you can replace it any time with /edit-provider. Leave empty only for local servers like Ollama. Press Esc to cancel \u2014 nothing is saved until the last step."
   });
 }
 async function promptManualAdd(ctx, input, providerId) {
@@ -270,7 +270,7 @@ Replace it?`,
   for (; ; ) {
     baseURL = await ctx.ui.dialog.prompt({
       title: "Step 2 of 5 \u2014 Base URL",
-      description: 'Paste the address your provider gives you for API access. It is usually on their setup page, labelled "Base URL" or "API endpoint", and looks like https://api.example.com/v1. Something running on this computer can use http://localhost:11434/v1.',
+      description: `Paste your provider's API address \u2014 it is on their setup page, labelled "Base URL" or "API endpoint". It looks like https://api.example.com/v1. A local server like Ollama uses http://localhost:11434/v1.`,
       placeholder: "https://api.example.com/v1"
     });
     if (!baseURL) {
@@ -295,7 +295,7 @@ Use '${repaired}' instead?`,
     if (isValidUrl(baseURL)) break;
     await ctx.ui.dialog.alert({
       title: "That address could not be read",
-      message: "It must start with https:// (or http:// for something on this computer) and look like https://api.example.com/v1.\n\nNothing was saved \u2014 please try again."
+      message: "It must start with https:// (or http:// for a local server) and look like https://api.example.com/v1.\n\nNothing was saved \u2014 please try again."
     });
   }
   const flavor = await ctx.ui.dialog.select({
@@ -480,7 +480,7 @@ async function wizardEdit(ctx) {
   } else {
     value = await ctx.ui.dialog.prompt({
       title: "New Base URL",
-      description: "Must start with https:// (or http:// for something on this computer) and usually ends in /v1",
+      description: "Must start with https:// (or http:// for a local server) and usually ends in /v1",
       value: provider.baseURL
     });
   }

@@ -391,7 +391,7 @@ var FLAVORS = {
   },
   ollama: {
     flavor: "ollama",
-    label: "Ollama (on this computer)",
+    label: "Ollama (local server)",
     description: "A local Ollama install, usually http://localhost:11434",
     listPaths: ["/api/tags", "/models"],
     listShape: "ollama-tags",
@@ -1904,7 +1904,12 @@ Technical detail: ${sanitizeErrorMessage(error)}`
           );
         }
       } else {
-        lines.push('No API key was given. If this provider needs one, run /edit-provider and choose "API key".');
+        lines.push(
+          'No API key was given, so this provider may not be able to sign in. If it needs one, run /edit-provider and choose "API key" \u2014 nothing else has to be redone.'
+        );
+      }
+      if (!input.apiKey) {
+        lines[0] = `Saved '${candidate.providerId}' with ${fresh.length} model${fresh.length === 1 ? "" : "s"}, but it has no API key yet so it cannot sign in.`;
       }
       return { status: "ok", message: lines.join("\n") };
     },
@@ -1914,7 +1919,7 @@ Technical detail: ${sanitizeErrorMessage(error)}`
       }
       input.baseURL = normalizeBaseUrl(input.baseURL);
       if (!isValidUrl(input.baseURL)) {
-        return { status: "invalid", message: "Enter a complete address starting with https:// (or localhost http://)." };
+        return { status: "invalid", message: "Enter a complete address starting with https:// (or http:// for a local server)." };
       }
       const clash = collisionSuggestion(input.providerId);
       if (clash && !input.overwrite) {

@@ -223,8 +223,8 @@ async function wizardAdd(ctx: V2TuiContext): Promise<void> {
     baseURL = await ctx.ui.dialog.prompt({
       title: "Step 2 of 5 — Base URL",
       description:
-        "Paste the address your provider gives you for API access. It is usually on their setup page, labelled \"Base URL\" or \"API endpoint\", and looks like https://api.example.com/v1. " +
-        "Something running on this computer can use http://localhost:11434/v1.",
+        "Paste your provider's API address — it is on their setup page, labelled \"Base URL\" or \"API endpoint\". " +
+        "It looks like https://api.example.com/v1. A local server like Ollama uses http://localhost:11434/v1.",
       placeholder: "https://api.example.com/v1",
     })
     if (!baseURL) {
@@ -248,7 +248,7 @@ async function wizardAdd(ctx: V2TuiContext): Promise<void> {
     await ctx.ui.dialog.alert({
       title: "That address could not be read",
       message:
-        "It must start with https:// (or http:// for something on this computer) and look like https://api.example.com/v1.\n\nNothing was saved — please try again.",
+        "It must start with https:// (or http:// for a local server) and look like https://api.example.com/v1.\n\nNothing was saved — please try again.",
     })
   }
 
@@ -446,7 +446,7 @@ async function wizardEdit(ctx: V2TuiContext): Promise<void> {
   } else {
     value = await ctx.ui.dialog.prompt({
       title: "New Base URL",
-      description: "Must start with https:// (or http:// for something on this computer) and usually ends in /v1",
+      description: "Must start with https:// (or http:// for a local server) and usually ends in /v1",
       value: provider.baseURL,
     })
   }
