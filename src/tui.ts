@@ -327,7 +327,7 @@ export const tui: TuiPlugin = async (api: TuiPluginApi) => {
         providers[providerId] = result.providerEntry
         await bridge.updateProviders(providers)
 
-        // M11: say what was learned and what to do next, not just "done".
+        // Say what was learned and what to do next, not just "done".
         const entry = result.providerEntry
         const stored = Object.keys(entry.models ?? {}).length
         const learned: string[] = []
@@ -561,7 +561,7 @@ export const tui: TuiPlugin = async (api: TuiPluginApi) => {
           ])
           if (!field) return
           const m = models[modelId]
-          // M2: an unmeasured limit is absent, not a refusal to edit.
+          // An unmeasured limit is absent, not a refusal to edit.
           m.limit ??= {}
           const current = field === "name"
             ? m.name

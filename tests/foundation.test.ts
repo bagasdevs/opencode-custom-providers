@@ -149,7 +149,7 @@ describe("describeProbed", () => {
     costSource: "models.dev",
   } as Parameters<typeof describeProbed>[0]
 
-  it("shows a value measured on this endpoint bare and tags a guess (M1)", () => {
+  it("shows a value measured on this endpoint bare and tags a guess", () => {
     expect(describeProbed(probed)).toBe(
       "Model: gpt-4o\n" +
         "  Context window: 128,000 tokens\n" +
@@ -159,7 +159,7 @@ describe("describeProbed", () => {
     )
   })
 
-  it("omits a guessed value instead of asserting it (M1, m8)", () => {
+  it("omits a guessed value instead of asserting it", () => {
     const unmeasured = {
       id: "zzz-unknown",
       context: 128_000,

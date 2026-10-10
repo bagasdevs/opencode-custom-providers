@@ -1,7 +1,7 @@
 import { probedToEnriched, type ProbedModel } from "./probe.js"
 import type { DisplayStyle, EnrichedModel } from "./enrich.js"
 
-// M9: a reasoning model without advertised effort options gets the full set, so
+// A reasoning model without advertised effort options gets the full set, so
 // the levels the gateway reported are actually selectable.
 const DEFAULT_REASONING_LEVELS = ["low", "medium", "high"] as const
 
@@ -30,7 +30,7 @@ export function applyEnrichedToDraft(draft: V2ModelDraft, model: EnrichedModel):
     const levels = model.reasoningLevels?.length ? model.reasoningLevels : DEFAULT_REASONING_LEVELS
     draft.variants = levels.map(level => ({ id: level, label: level, thinkingLevel: level }))
   }
-  // M2: write only measured limits. An absent context/output means "not measured"
+  // Write only measured limits. An absent context/output means "not measured"
   // and the host fills it; a 128000/4096 placeholder would read as a fact.
   const limit: { context?: number; input?: number; output?: number } = {}
   if (model.limit.context !== undefined) limit.context = model.limit.context

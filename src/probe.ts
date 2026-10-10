@@ -315,7 +315,7 @@ function modelsUrlFor(candidate: string, flavor: ProviderFlavor): string {
   }
 }
 
-/** M10: the winning candidate is the variant that actually answered, so the
+/** The winning candidate is the variant that actually answered, so the
  * caller can store that URL instead of re-guessing `/v1` on every re-probe.
  * `listUnsupported` is the distinct third outcome — the flavor exposes no model
  * list at all — which must not be folded into "it answered but listed nothing". */
@@ -386,7 +386,7 @@ export function probedToEnriched(
   probed: ProbedModel,
   displayStyle: DisplayStyle,
 ): EnrichedModel {
-  // M2: `limit` carries only measured fields. A fallback ("api-fallback") or an
+  // `limit` carries only measured fields. A fallback ("api-fallback") or an
   // assumption ("default") is not a measurement, so it is left absent and the
   // host's own limit fallback applies instead of a real-looking invented number.
   const limit: { context?: number; output?: number } = {}
@@ -412,14 +412,14 @@ export function probedToEnriched(
   return model
 }
 
-/** m8: `default` means "no measurement". `api-fallback` is a protocol guess,
+/** `default` means "no measurement". `api-fallback` is a protocol guess,
  * which is also not a measurement of this model - both are unevidenced. */
 function hasEvidence(source: MetadataSource | undefined): boolean {
   return source !== undefined && source !== "default" && source !== "api-fallback"
 }
 
 export function describeProbed(probed: ProbedModel): string {
-  // M1: bare = measured here, tagged = sourced from elsewhere (a guess about
+  // bare = measured here, tagged = sourced from elsewhere (a guess about
   // *this* endpoint), absent = no measurement at all.
   const lines = [`Model: ${probed.id}`]
   if (hasEvidence(probed.contextSource)) {
@@ -443,13 +443,13 @@ export function describeProbed(probed: ProbedModel): string {
   return lines.join("\n")
 }
 
-/** M1: nothing for a value measured on this endpoint, `[source]` for one taken
+/** Nothing for a value measured on this endpoint, `[source]` for one taken
  * from a database or a rule, i.e. a guess about this endpoint. */
 function tag(source: MetadataSource | undefined): string {
   return source === "detected" || source === undefined ? "" : ` [${source}]`
 }
 
-/** M1 one-liner for picker rows: `128K [models.dev]`, `context 128K [local rules]`,
+/** One-liner for picker rows: `128K [models.dev]`, `context 128K [local rules]`,
  * and nothing at all when the value was never measured. */
 export function describeProbedShort(probed: ProbedModel): string {
   const parts: string[] = []
@@ -553,7 +553,7 @@ export async function buildCatalogModels(
 
 /** Resolve hand-typed ids against the local rules and the models.dev lookup.
  *
- * B2 contract, which callers depend on and must not break:
+ * Contract, which callers depend on and must not break:
  *  - network-free with respect to the provider endpoint: no request is made to
  *    the user's baseURL. (models.dev is a public metadata DB, not the endpoint.)
  *  - an empty `ids` list resolves to an empty result; the helper does NOT fall

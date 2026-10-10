@@ -22,7 +22,7 @@ export interface ProviderConfig {
   [key: string]: unknown
 }
 
-// m7 — non-goals, kept out on purpose. Per-model HTTP headers and per-model
+// Non-goals, kept out on purpose. Per-model HTTP headers and per-model
 // baseURL overrides, $ENV / !command auth serialization, models.yml runtime
 // selection and video-input display are all deliberately absent from this
 // shape. Reading them here is a scope error, not a missing feature.

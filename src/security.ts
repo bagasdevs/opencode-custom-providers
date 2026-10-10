@@ -25,7 +25,7 @@ export function sanitizeUrl(raw: string): string {
   }
 }
 
-/** m6: strip control characters from any string that reaches a host dialog's
+/** Strip control characters from any string that reaches a host dialog's
  * `description` or `searchText`. Host widgets own key handling; the only way to
  * inherit the "delete key lands in the search box" defect is to feed them a raw
  * control character. */

@@ -20,7 +20,7 @@ afterEach(() => {
   clearModelsDevCache()
 })
 
-describe("M2 - no placeholder number is written when the value is unknown", () => {
+describe("no placeholder number is written when the value is unknown", () => {
   const noEvidence = resolveModel({ id: "zzz-unknown-xyz" }, new Map(), "openai-chat", {})
 
   it("still resolves a fallback value on the probe, tagged as a fallback", () => {
@@ -38,7 +38,7 @@ describe("M2 - no placeholder number is written when the value is unknown", () =
   })
 })
 
-describe("m8 - `default` means no measurement", () => {
+describe("`default` means no measurement", () => {
   it("leaves reasoning undefined when no tier produced evidence", () => {
     const probed = resolveModel({ id: "zzz-unknown-xyz" }, new Map(), "openai-chat", {})
     expect(probed.reasoning).toBeUndefined()
@@ -55,7 +55,7 @@ describe("m8 - `default` means no measurement", () => {
   })
 })
 
-describe("M3 - one resolver owns the clamp", () => {
+describe("one resolver owns the clamp", () => {
   it("clamps a degenerate output onto context at the single write boundary", () => {
     const probed = resolveModel({ id: "m", context_length: 8_000, max_output_tokens: 8_000 }, new Map(), "openai-chat", {})
     expect(probed.maxOutput).toBe(4_000)
@@ -67,7 +67,7 @@ describe("M3 - one resolver owns the clamp", () => {
   })
 })
 
-describe("M9 - reasoning effort levels survive into the stored draft", () => {
+describe("reasoning effort levels survive into the stored draft", () => {
   it("writes the advertised levels as variants", () => {
     const probed = resolveModel(
       { id: "m", capabilities: { reasoning: { effort_options: ["low", "high"] } as unknown as boolean } },
@@ -100,7 +100,7 @@ describe("M9 - reasoning effort levels survive into the stored draft", () => {
   })
 })
 
-describe("M10 - endpoint normalisation writes back the variant that answered", () => {
+describe("endpoint normalisation writes back the variant that answered", () => {
   const stubModels = (answers: Record<string, unknown>) => {
     vi.stubGlobal(
       "fetch",
@@ -140,7 +140,7 @@ describe("M10 - endpoint normalisation writes back the variant that answered", (
   })
 })
 
-describe("B2 - previewManualModels stays network-free and rejects an empty list", () => {
+describe("previewManualModels stays network-free and rejects an empty list", () => {
   it("resolves hand-typed ids with no endpoint traffic", async () => {
     vi.stubGlobal(
       "fetch",
@@ -164,7 +164,7 @@ describe("B2 - previewManualModels stays network-free and rejects an empty list"
   })
 })
 
-describe("m7 - documented non-goals stay out", () => {
+describe("documented non-goals stay out", () => {
   it("emits no per-model headers, baseURL override, env-command auth or video input", async () => {
     const probed = resolveModel({ id: "zzz-unknown-xyz" }, new Map(), "openai-chat", {})
     const draft = probedToDraft(probed)

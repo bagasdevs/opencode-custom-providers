@@ -5,7 +5,7 @@ import type { DisplayStyle, EnrichedModel } from "./enrich.js"
 
 export { normalizeModelId, fetchEndpointModels } from "./endpoint.js"
 export { clearModelsDevCache } from "./catalog.js"
-// M3: buildEnrichedModel was the second, unclamped resolver. resolveModel
+// buildEnrichedModel was the second, unclamped resolver. resolveModel
 // (src/probe.ts) is now the only one, so the clamp cannot be bypassed.
 export type { DisplayStyle, EnrichedModel } from "./enrich.js"
 

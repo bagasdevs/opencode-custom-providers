@@ -351,7 +351,7 @@ export function editModelField(
     }
     case "context":
     case "output": {
-      // M2: `limit` exists but its fields may be absent when unmeasured, so the
+      // `limit` exists but its fields may be absent when unmeasured, so the
       // editor seeds the object rather than refusing to edit.
       model.limit ??= {}
       const n = Number(value)

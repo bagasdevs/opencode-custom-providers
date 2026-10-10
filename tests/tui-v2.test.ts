@@ -132,7 +132,7 @@ describe("v2 add recovery", () => {
 })
 
 describe("v2 add guards", () => {
-  it("repairs a bare host before calling add (B4)", async () => {
+  it("repairs a bare host before calling add", async () => {
     const state = makeContext(
       [{ status: "ok", message: "ready" }],
       ["my-proxy", "bagas.up.railway.app/v1", ""],
@@ -143,7 +143,7 @@ describe("v2 add guards", () => {
     expect(add?.input).toMatchObject({ baseURL: "https://bagas.up.railway.app/v1" })
   })
 
-  it("keeps a localhost address on http (B4)", async () => {
+  it("keeps a localhost address on http", async () => {
     const state = makeContext(
       [{ status: "ok", message: "ready" }],
       ["local", "localhost:11434", ""],
@@ -153,7 +153,7 @@ describe("v2 add guards", () => {
     expect(state.calls.find(c => c.method === "add")?.input).toMatchObject({ baseURL: "http://localhost:11434" })
   })
 
-  it("asks before replacing a provider that already exists (B5)", async () => {
+  it("asks before replacing a provider that already exists", async () => {
     const state = makeContext(
       [{ status: "ok", message: "ready" }],
       ["taken", "https://provider.example/v1", ""],
@@ -164,7 +164,7 @@ describe("v2 add guards", () => {
     expect(state.calls.some(c => c.method === "add")).toBe(true)
   })
 
-  it("stops when the user declines to replace (B5)", async () => {
+  it("stops when the user declines to replace", async () => {
     const state = makeContext(
       [{ status: "ok", message: "ready" }],
       ["taken", "https://provider.example/v1", ""],
@@ -176,7 +176,7 @@ describe("v2 add guards", () => {
     expect(state.calls.some(c => c.method === "add")).toBe(false)
   })
 
-  it("confirms a reused endpoint and only then adds with confirmReuse (M12)", async () => {
+  it("confirms a reused endpoint and only then adds with confirmReuse", async () => {
     const state = makeContext(
       [{ status: "confirm_endpoint_reuse", usedBy: ["other"], message: "already used" }, { status: "ok", message: "ready" }],
       ["mine", "https://shared.example/v1", ""],
@@ -190,7 +190,7 @@ describe("v2 add guards", () => {
     expect(adds[1]?.input).toMatchObject({ confirmReuse: true })
   })
 
-  it("sends Anthropic users to the manual prompt instead of a dead end (B7)", async () => {
+  it("sends Anthropic users to the manual prompt instead of a dead end", async () => {
     const state = makeContext(
       [{ status: "ok", message: "added" }],
       ["claude", "https://api.anthropic.com/v1", "", "claude-sonnet-5"],

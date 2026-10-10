@@ -1,5 +1,5 @@
 // EnrichedModel is the stored model shape shared by every write path.
-// The resolver that produces it is resolveModel (src/probe.ts) - M3 leaves
+// The resolver that produces it is resolveModel (src/probe.ts), which leaves
 // exactly one resolver, so there is no second, unclamped copy here.
 
 
@@ -19,7 +19,7 @@ export interface EnrichedModel {
     cache_read?: number
     cache_write?: number
   }
-  // M2: a limit that was never measured is absent, not a placeholder number.
+  // A limit that was never measured is absent, not a placeholder number.
   limit: {
     context?: number
     input?: number

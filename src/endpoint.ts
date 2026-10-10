@@ -12,7 +12,7 @@ export function normalizeModelId(id: string): string {
   return normalized.replaceAll(":", "-")
 }
 
-// B4: repair the two common near-miss inputs — a bare host and a copy-pasted
+// Repair the two common near-miss inputs — a bare host and a copy-pasted
 // full endpoint path — instead of rejecting them.
 const ENDPOINT_PATH_SUFFIXES = ["/chat/completions", "/messages", "/responses", "/models"]
 

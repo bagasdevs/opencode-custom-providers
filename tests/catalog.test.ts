@@ -98,7 +98,7 @@ afterEach(() => {
 describe("summarizeCatalog", () => {
   it("sorts by name and skips sites without a usable address or models", () => {
     const sites = summarizeCatalog(CATALOG as never)
-    // B7: a site the catalog cannot add (no api URL) must never be offered.
+    // A site the catalog cannot add (no api URL) must never be offered.
     expect(sites.map(s => s.id)).toEqual(["site-a", "site-b"])
     expect(sites[0]).toMatchObject({ name: "Alpha", modelCount: 1 })
   })

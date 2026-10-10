@@ -200,7 +200,7 @@ function zeroModelsHint(hasKey: boolean): string {
     : "The endpoint listed no models. Most gateways need an API key before they list models: add one and re-probe."
 }
 
-/** M4: the stored draft as the diff helpers see it (only the fields they compare).
+/** The stored draft as the diff helpers see it (only the fields they compare).
  * A record may hold a v2 draft (capabilities as id lists), a host model
  * (capabilities as capability flags) or a v1 entry (modalities), so read all three. */
 function storedModelView(modelId: string, draft: Draft): EnrichedModel {
@@ -541,7 +541,7 @@ export const setup = async (ctx: V2Context): Promise<void> => {
             `Use '${clash}' instead, or add the same provider again with overwrite=true if you really mean to replace it.`,
         }
       }
-      // M12: the same address under two names duplicates every model in the picker.
+      // The same address under two names duplicates every model in the picker.
       const reused = [...managed.entries()].filter(
         ([id, entry]) => id !== input.providerId && entry.baseURL.replace(/\/+$/, "") === normalizeBaseUrl(input.baseURL),
       )
@@ -830,7 +830,7 @@ export const setup = async (ctx: V2Context): Promise<void> => {
       if (fresh.length === 0) {
         return { message: `The provider listed no models.\n${zeroModelsHint(Boolean(await credentialKey(providerId) ?? candidate.apiKey))}\n\nStored models were kept, so nothing broke.` }
       }
-      // M4: field-level diff, so a metadata change upstream is not reported as "up to date".
+      // Field-level diff, so a metadata change upstream is not reported as "up to date".
       const current = Object.fromEntries(storedModels.get(providerId) ?? new Map<string, EnrichedModel>())
       const changes = diffModels(current, fresh, candidate.displayStyle)
       const added = changes.filter(change => change.kind === "added")
