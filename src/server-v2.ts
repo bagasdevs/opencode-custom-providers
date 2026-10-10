@@ -104,6 +104,8 @@ interface ManagedProvider {
   baseURL: string
   flavor?: ProviderFlavor
   displayStyle?: DisplayStyle
+  /** Discovered model drafts, kept beside the provider so they survive a restart. */
+  models?: Record<string, V2ModelDraft>
 }
 
 interface Candidate {
@@ -278,6 +280,17 @@ function candidateFrom(record: ProviderRecord, managed: ManagedProvider | undefi
   }
 }
 
+/** Rebuilds a provider's model map from persisted drafts, skipping anything that is not a draft. */
+function seedModels(raw: unknown): Map<string, V2ModelDraft> | undefined {
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return undefined
+  const models = new Map<string, V2ModelDraft>()
+  for (const [modelId, draft] of Object.entries(raw as Record<string, unknown>)) {
+    if (typeof draft !== "object" || draft === null || Array.isArray(draft)) continue
+    models.set(modelId, draft as V2ModelDraft)
+  }
+  return models.size > 0 ? models : undefined
+}
+
 function parseManaged(raw: unknown): Map<string, ManagedProvider> {
   const result = new Map<string, ManagedProvider>()
   if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return result
@@ -289,6 +302,10 @@ function parseManaged(raw: unknown): Map<string, ManagedProvider> {
       baseURL: entry.baseURL,
       flavor: parseFlavor(typeof entry.flavor === "string" ? entry.flavor : undefined) ?? undefined,
       displayStyle: entry.displayStyle === "name" ? "name" : "slug",
+      // Absent on entries written before models were persisted, which is read as "nothing known yet".
+      models: typeof entry.models === "object" && entry.models !== null && !Array.isArray(entry.models)
+        ? (entry.models as Record<string, V2ModelDraft>)
+        : undefined,
     })
   }
   return result
@@ -299,6 +316,12 @@ export const setup = async (ctx: V2Context): Promise<void> => {
   const removed = new Set<string>(await ctx.storage.get(REMOVED_KEY).catch(() => undefined) as string[] | undefined ?? [])
   const candidates = new Map<string, Candidate>()
   const discovered = new Map<string, Map<string, V2ModelDraft>>()
+  // Transforms replay on every reload and start empty on a fresh process, so the picker would come
+  // back with no models unless the drafts are read back here, before the first transform runs.
+  for (const [providerId, entry] of managed) {
+    const seeded = seedModels(entry.models)
+    if (seeded) discovered.set(providerId, seeded)
+  }
   const storedIds = new Map<string, Set<string>>()
   const storedModels = new Map<string, Map<string, EnrichedModel>>()
 
@@ -318,7 +341,20 @@ export const setup = async (ctx: V2Context): Promise<void> => {
   }
 
   const persist = async () => {
-    await ctx.storage.set(STORAGE_KEY, Object.fromEntries(managed))
+    await ctx.storage.set(
+      STORAGE_KEY,
+      Object.fromEntries(
+        [...managed].map(([providerId, entry]) => [
+          providerId,
+          {
+            baseURL: entry.baseURL,
+            flavor: entry.flavor,
+            displayStyle: entry.displayStyle,
+            models: Object.fromEntries(discovered.get(providerId) ?? new Map<string, V2ModelDraft>()),
+          },
+        ]),
+      ),
+    )
   }
 
   // Transforms replay on every reload: keep them pure (no I/O).
@@ -431,6 +467,8 @@ export const setup = async (ctx: V2Context): Promise<void> => {
   const applyModels = async (providerId: string, fresh: ProbedModel[], displayStyle: DisplayStyle) => {
     const models = modelsFor(providerId)
     for (const probed of fresh) models.set(probed.id, probedToDraft(probed, displayStyle))
+    // Persist before publishing to the host, so a crash right after cannot lose the models.
+    await persist()
     await ctx.provider.reload()
   }
 
@@ -469,7 +507,10 @@ export const setup = async (ctx: V2Context): Promise<void> => {
       else outcome.updated.push(candidate.providerId)
       changed = true
     }
-    if (changed) await ctx.provider.reload()
+    if (changed) {
+      await persist()
+      await ctx.provider.reload()
+    }
     return outcome
   }
 
@@ -583,7 +624,7 @@ export const setup = async (ctx: V2Context): Promise<void> => {
         flavor: candidate.flavor,
         displayStyle: candidate.displayStyle,
       })
-      await persist()
+      // applyModels persists once the models are known, so no separate write is needed here.
       await registerIntegration(candidate.providerId)
       await applyModels(candidate.providerId, fresh, candidate.displayStyle)
       const lines = [
@@ -665,7 +706,6 @@ export const setup = async (ctx: V2Context): Promise<void> => {
         flavor: candidate.flavor,
         displayStyle: candidate.displayStyle,
       })
-      await persist()
       await registerIntegration(candidate.providerId)
       await applyModels(candidate.providerId, unique, displayStyle)
       let keyMessage = ""
@@ -919,6 +959,7 @@ export const setup = async (ctx: V2Context): Promise<void> => {
         models.delete(modelId)
         removed++
       }
+      await persist()
       await ctx.provider.reload()
       const total = [...models.values()].length
       return {
@@ -977,7 +1018,6 @@ export const setup = async (ctx: V2Context): Promise<void> => {
       const displayStyle: DisplayStyle = input.displayStyle === "name" ? "name" : "slug"
       await clearRemoval(input.providerId)
       managed.set(input.providerId, { baseURL: site.api, flavor: DEFAULT_FLAVOR, displayStyle })
-      await persist()
       await registerIntegration(input.providerId)
       await applyModels(
         input.providerId,

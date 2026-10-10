@@ -1628,6 +1628,15 @@ function candidateFrom(record, managed) {
     displayStyle
   };
 }
+function seedModels(raw) {
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return void 0;
+  const models = /* @__PURE__ */ new Map();
+  for (const [modelId, draft] of Object.entries(raw)) {
+    if (typeof draft !== "object" || draft === null || Array.isArray(draft)) continue;
+    models.set(modelId, draft);
+  }
+  return models.size > 0 ? models : void 0;
+}
 function parseManaged(raw) {
   const result = /* @__PURE__ */ new Map();
   if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return result;
@@ -1638,7 +1647,9 @@ function parseManaged(raw) {
     result.set(providerId, {
       baseURL: entry.baseURL,
       flavor: parseFlavor(typeof entry.flavor === "string" ? entry.flavor : void 0) ?? void 0,
-      displayStyle: entry.displayStyle === "name" ? "name" : "slug"
+      displayStyle: entry.displayStyle === "name" ? "name" : "slug",
+      // Absent on entries written before models were persisted, which is read as "nothing known yet".
+      models: typeof entry.models === "object" && entry.models !== null && !Array.isArray(entry.models) ? entry.models : void 0
     });
   }
   return result;
@@ -1648,6 +1659,10 @@ var setup = async (ctx) => {
   const removed = new Set(await ctx.storage.get(REMOVED_KEY).catch(() => void 0) ?? []);
   const candidates = /* @__PURE__ */ new Map();
   const discovered = /* @__PURE__ */ new Map();
+  for (const [providerId, entry] of managed) {
+    const seeded = seedModels(entry.models);
+    if (seeded) discovered.set(providerId, seeded);
+  }
   const storedIds = /* @__PURE__ */ new Map();
   const storedModels = /* @__PURE__ */ new Map();
   const modelsFor = (providerId) => {
@@ -1663,7 +1678,20 @@ var setup = async (ctx) => {
     await ctx.storage.set(REMOVED_KEY, [...removed]);
   };
   const persist = async () => {
-    await ctx.storage.set(STORAGE_KEY, Object.fromEntries(managed));
+    await ctx.storage.set(
+      STORAGE_KEY,
+      Object.fromEntries(
+        [...managed].map(([providerId, entry]) => [
+          providerId,
+          {
+            baseURL: entry.baseURL,
+            flavor: entry.flavor,
+            displayStyle: entry.displayStyle,
+            models: Object.fromEntries(discovered.get(providerId) ?? /* @__PURE__ */ new Map())
+          }
+        ])
+      )
+    );
   };
   await ctx.provider.transform((providers) => {
     const found = /* @__PURE__ */ new Map();
@@ -1763,6 +1791,7 @@ var setup = async (ctx) => {
   const applyModels = async (providerId, fresh, displayStyle) => {
     const models = modelsFor(providerId);
     for (const probed of fresh) models.set(probed.id, probedToDraft(probed, displayStyle));
+    await persist();
     await ctx.provider.reload();
   };
   const refresh = async (only) => {
@@ -1791,7 +1820,10 @@ var setup = async (ctx) => {
       else outcome.updated.push(candidate.providerId);
       changed = true;
     }
-    if (changed) await ctx.provider.reload();
+    if (changed) {
+      await persist();
+      await ctx.provider.reload();
+    }
     return outcome;
   };
   const fingerprint = (models) => {
@@ -1883,7 +1915,6 @@ ${probeHint(error)}`,
         flavor: candidate.flavor,
         displayStyle: candidate.displayStyle
       });
-      await persist();
       await registerIntegration(candidate.providerId);
       await applyModels(candidate.providerId, fresh, candidate.displayStyle);
       const lines = [
@@ -1956,7 +1987,6 @@ Technical detail: ${sanitizeErrorMessage(error)}`
         flavor: candidate.flavor,
         displayStyle: candidate.displayStyle
       });
-      await persist();
       await registerIntegration(candidate.providerId);
       await applyModels(candidate.providerId, unique, displayStyle);
       let keyMessage = "";
@@ -2189,6 +2219,7 @@ Technical detail: ${sanitizeErrorMessage(error)}` };
         models.delete(modelId);
         removed2++;
       }
+      await persist();
       await ctx.provider.reload();
       const total = [...models.values()].length;
       return {
@@ -2233,7 +2264,6 @@ Fix with /edit-provider (check the address and the API key), then run /reload-mo
       const displayStyle = input.displayStyle === "name" ? "name" : "slug";
       await clearRemoval(input.providerId);
       managed.set(input.providerId, { baseURL: site.api, flavor: DEFAULT_FLAVOR, displayStyle });
-      await persist();
       await registerIntegration(input.providerId);
       await applyModels(
         input.providerId,
