@@ -2,6 +2,14 @@
   "name": "opencode-custom-providers",
   "version": "1.0.1-stable",
   "description": "Dynamic model discovery for OpenAI-compatible providers in OpenCode with models.dev enrichment",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/bagasdevs/opencode-custom-providers.git"
+  },
+  "homepage": "https://github.com/bagasdevs/opencode-custom-providers#readme",
+  "bugs": {
+    "url": "https://github.com/bagasdevs/opencode-custom-providers/issues"
+  },
   "type": "module",
   "main": "./dist/server.js",
   "types": "./dist/server.d.ts",

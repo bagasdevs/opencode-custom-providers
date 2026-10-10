@@ -7,15 +7,18 @@ function makeContext(
   responses: unknown[],
   promptValues: Array<string | undefined>,
   selectValues: Array<string | undefined>,
+  listProviders: Array<{ id: string; models: number }> = [],
 ) {
   const calls: RpcCall[] = []
   const alerts: Array<{ title: string; message: string }> = []
   let layerFactory: (() => KeymapLayer) | undefined
+  const confirmValues: Array<boolean | undefined> = []
   const dialog: DialogApi = {
     alert: async options => {
       alerts.push(options)
     },
-    confirm: async () => true,
+    // Undefined keeps the historical always-confirm behaviour the existing tests rely on.
+    confirm: async () => confirmValues.shift() ?? true,
     prompt: async () => promptValues.shift(),
     select: async () => selectValues.shift(),
   }
@@ -27,7 +30,7 @@ function makeContext(
           calls.push(input)
           // `list` is a side probe (the duplicate-name guard), not part of the scripted RPC
           // sequence these tests assert on, so it must not consume a scripted response.
-          if (input.method === "list") return { output: { providers: [] } }
+          if (input.method === "list") return { output: { providers: listProviders } }
           return { output: responses.shift() }
         },
       },
@@ -43,7 +46,7 @@ function makeContext(
       },
     },
   }
-  return { context, calls, alerts, getLayer: () => layerFactory?.() }
+  return { context, calls, alerts, confirmValues, getLayer: () => layerFactory?.() }
 }
 
 async function runAdd(state: ReturnType<typeof makeContext>): Promise<void> {
@@ -125,5 +128,79 @@ describe("v2 add recovery", () => {
 
     expect(state.calls.filter(call => call.method !== "list").map(call => call.method)).toEqual(["add", "manualAdd", "manualAdd"])
     expect(state.alerts.map(alert => alert.message)).toEqual(["bad ids", "added"])
+  })
+})
+
+describe("v2 add guards", () => {
+  it("repairs a bare host before calling add (B4)", async () => {
+    const state = makeContext(
+      [{ status: "ok", message: "ready" }],
+      ["my-proxy", "bagas.up.railway.app/v1", ""],
+      ["openai-chat", "slug"],
+    )
+    await runAdd(state)
+    const add = state.calls.find(c => c.method === "add")
+    expect(add?.input).toMatchObject({ baseURL: "https://bagas.up.railway.app/v1" })
+  })
+
+  it("keeps a localhost address on http (B4)", async () => {
+    const state = makeContext(
+      [{ status: "ok", message: "ready" }],
+      ["local", "localhost:11434", ""],
+      ["ollama", "slug"],
+    )
+    await runAdd(state)
+    expect(state.calls.find(c => c.method === "add")?.input).toMatchObject({ baseURL: "http://localhost:11434" })
+  })
+
+  it("asks before replacing a provider that already exists (B5)", async () => {
+    const state = makeContext(
+      [{ status: "ok", message: "ready" }],
+      ["taken", "https://provider.example/v1", ""],
+      ["openai-chat", "slug"],
+      [{ id: "taken", models: 12 }],
+    )
+    await runAdd(state)
+    expect(state.calls.some(c => c.method === "add")).toBe(true)
+  })
+
+  it("stops when the user declines to replace (B5)", async () => {
+    const state = makeContext(
+      [{ status: "ok", message: "ready" }],
+      ["taken", "https://provider.example/v1", ""],
+      ["openai-chat", "slug"],
+      [{ id: "taken", models: 12 }],
+    )
+    state.confirmValues.push(false)
+    await runAdd(state)
+    expect(state.calls.some(c => c.method === "add")).toBe(false)
+  })
+
+  it("confirms a reused endpoint and only then adds with confirmReuse (M12)", async () => {
+    const state = makeContext(
+      [{ status: "confirm_endpoint_reuse", usedBy: ["other"], message: "already used" }, { status: "ok", message: "ready" }],
+      ["mine", "https://shared.example/v1", ""],
+      ["openai-chat", "slug"],
+    )
+    state.confirmValues.push(true)
+    await runAdd(state)
+    const adds = state.calls.filter(c => c.method === "add")
+    expect(adds).toHaveLength(2)
+    expect(adds[0]?.input).not.toHaveProperty("confirmReuse")
+    expect(adds[1]?.input).toMatchObject({ confirmReuse: true })
+  })
+
+  it("sends Anthropic users to the manual prompt instead of a dead end (B7)", async () => {
+    const state = makeContext(
+      [{ status: "ok", message: "added" }],
+      ["claude", "https://api.anthropic.com/v1", "", "claude-sonnet-5"],
+      ["anthropic", "slug"],
+    )
+    await runAdd(state)
+    // This flavour cannot list models, so the wizard must never call the network add...
+    expect(state.calls.some(c => c.method === "add")).toBe(false)
+    // ...and must finish through the manual path with the ids the user typed.
+    const manual = state.calls.find(c => c.method === "manualAdd")
+    expect(manual?.input).toMatchObject({ providerId: "claude", modelIds: "claude-sonnet-5" })
   })
 })
