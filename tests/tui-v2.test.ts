@@ -204,3 +204,33 @@ describe("v2 add guards", () => {
     expect(manual?.input).toMatchObject({ providerId: "claude", modelIds: "claude-sonnet-5" })
   })
 })
+
+describe("v2 command surface", () => {
+  // These lock the decision that /add-known-provider and the add-from-catalog AGENT TOOL are
+  // different things: one is a palette command, the other is model-only. An earlier revision
+  // also aliased /add-from-catalog, which duplicated the command for no user benefit.
+  const commands = (() => {
+    const state = makeContext([], [], [])
+    setup(state.context)
+    return state.getLayer()?.commands ?? []
+  })()
+
+  it("registers every command under a unique slash name", () => {
+    const names = commands.map(c => c.slash?.name)
+    expect(new Set(names).size).toBe(names.length)
+  })
+
+  it("does not alias /add-from-catalog onto /add-known-provider", () => {
+    const known = commands.find(c => c.slash?.name === "add-known-provider")
+    expect(known).toBeDefined()
+    expect(known?.slash?.aliases ?? []).not.toContain("add-from-catalog")
+    const flat = commands.flatMap(c => c.slash?.aliases ?? [])
+    expect(flat).not.toContain("add-from-catalog")
+  })
+
+  it("keeps the two add flows separate: probe vs catalog", () => {
+    const names = commands.map(c => c.slash?.name)
+    expect(names).toContain("add-provider")
+    expect(names).toContain("add-known-provider")
+  })
+})

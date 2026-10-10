@@ -536,7 +536,7 @@ var COMMANDS = [
     run: wizardReprobe
   },
   { name: "reload-models", title: "Reload all models", description: "Refresh every provider from its own address", run: wizardRefresh },
-  { name: "add-known-provider", aliases: ["add-from-catalog"], title: "Add a known provider", description: "Pick a provider from the built-in list", run: wizardCatalogAdd },
+  { name: "add-known-provider", title: "Add a known provider", description: "Pick a provider from the built-in list", run: wizardCatalogAdd },
   { name: "review-model-changes", aliases: ["apply-reconcile"], title: "Review model changes", description: "See what changed and choose what to keep", run: wizardApplyReconcile },
   { name: "edit-provider", title: "Edit a provider", description: "Change its address, API type, key, or how models are named", run: wizardEdit },
   { name: "delete-provider", title: "Delete a provider", description: "Remove a provider and its models", run: wizardDelete }

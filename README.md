@@ -48,13 +48,44 @@ Models are discovered and enriched automatically.
 
 ## Commands
 
-| TUI | Agent tools |
+Slash commands are what you type; agent tools are what the model calls. They are separate
+namespaces — an agent tool never appears in the palette, and a slash command is never callable
+by the model.
+
+### TUI slash commands
+
+OpenCode 2 uses the names on the left. OpenCode 1 registers the same flows under the names in
+parentheses.
+
+| Command | What it does |
 | --- | --- |
-| `/add-provider` | `add-provider`, `add-from-catalog`, `list-catalog-sites` |
-| `/reprobe-models` | `reprobe-models`, `apply-reconcile` |
-| `/edit-provider` | `edit-provider` |
-| `/delete-provider` | `delete-provider`, `delete-models` |
-| `/reload-models` | `refresh-models` |
+| `/add-provider` | Set up a new API provider step by step (probes the endpoint) |
+| `/add-known-provider` | Pick a provider from the built-in models.dev list (no probing) |
+| `/list-custom-providers` | Show every custom provider and its models |
+| `/check-for-new-models` (`reprobe-models`) | Ask one provider whether it has new models |
+| `/review-model-changes` (`apply-reconcile`) | See what changed and choose what to keep |
+| `/reload-models` (`refresh-models`) | Refresh every provider from its own address |
+| `/edit-provider` | Change a provider's address, API type, key, or model naming |
+| `/delete-provider` | Remove a provider and its models |
+
+OpenCode 1 has no `/list-custom-providers`, `/add-known-provider` or `/review-model-changes`;
+the catalog and reconcile flows live inside its own wizards instead.
+
+### Agent tools
+
+| OpenCode 1 | OpenCode 2 | What it does |
+| --- | --- | --- |
+| `add-provider` | `add-provider` | Add a provider by probing its endpoint |
+| `add-from-catalog` | `add-from-catalog` | Add a provider from the models.dev catalog (no probing) |
+| `list-catalog-sites` | `list-catalog-sites` | List catalog sites to pick from |
+| — | `manual-add-models` | Add model ids by hand when an endpoint cannot list them |
+| — | `list-custom-providers` | List configured providers and their models |
+| `reprobe-models` | `reprobe-models` | Re-probe one provider and list model changes |
+| `apply-reconcile` | `apply-reconcile` | Persist reconcile decisions |
+| `refresh-models` | `refresh-models` | Re-discover models for every provider |
+| `edit-provider` | — | Edit an existing provider |
+| `delete-provider` | `delete-provider` | Remove a provider |
+| `delete-models` | — | Remove individual models |
 
 ## Configuration
 

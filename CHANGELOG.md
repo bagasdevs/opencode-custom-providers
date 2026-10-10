@@ -10,7 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 OpenCode 2 support, and a beginner-proof setup path on both hosts.
 
 ### Added
-- OpenCode 2 server plugin (`src/server-v2.ts`): provider discovery through the v2 provider registry, credential-backed API keys, and eight agent tools
+- OpenCode 2 server plugin (`src/server-v2.ts`): provider discovery through the v2 provider registry, credential-backed API keys, and nine agent tools
 - OpenCode 2 TUI plugin (`src/tui-v2.ts`): palette and slash commands for add, catalog add, re-probe, reconcile, edit, delete, refresh, list
 - Manual model entry for endpoints that cannot list models (no `/models` route, blocked gateway, or a key that is not available yet)
 - A failed or empty probe now offers retry / add-models-manually / cancel instead of a dead-end alert
@@ -20,6 +20,8 @@ OpenCode 2 support, and a beginner-proof setup path on both hosts.
 
 ### Changed
 - Reconcile defaults to the safe row: an omitted per-model decision keeps a stored model and applies only a new one
+- `/add-from-catalog` is no longer an alias of `/add-known-provider`. It never was a TUI command in an earlier release, no message pointed users at it, and it only duplicated one palette entry. `add-from-catalog` remains the model-facing agent tool.
+- The README command reference now separates slash commands from agent tools, states which names belong to OpenCode 1, and documents the v2 commands that were missing
 - The catalog only offers sites that can actually be added (those without a usable address are filtered out)
 - Removing a provider also removes its models, and it stays removed across a restart
 - The API key can be cleared, and a failed key save no longer claims the key survives a restart
