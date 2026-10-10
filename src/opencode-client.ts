@@ -4,13 +4,8 @@ import type { Config as SdkV1Config } from "@opencode-ai/sdk"
 import type { Config as SdkV2Config } from "@opencode-ai/sdk/v2"
 import type { ProviderConfig } from "./types.js"
 
-// Static per-entrypoint bridges for the opencode v1 (server) vs v2 (TUI)
-// client split. The host guarantees the shape per entrypoint, so callers pick
-// a bridge by typed import — never by runtime probing. Each bridge owns one
-// cast to the real SDK Config type, so SDK renames fail at compile time.
-//
-// The cast exists because local ProviderConfig is a superset of the SDK's
-// (`dynamic`, `displayStyle`, `flavor`, `compat`, index signature).
+// Per-entrypoint bridges for the v1 server vs v2 TUI client split. The cast
+// exists because ProviderConfig is a superset of the SDK Config type.
 
 export interface ClientBridge {
   setApiKey(id: string, key: string): Promise<void>

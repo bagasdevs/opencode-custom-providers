@@ -1,11 +1,8 @@
 import type { DisplayStyle, EnrichedModel } from "./enrich.js"
 import { probedToEnriched, type ProbedModel } from "./probe.js"
 
-// Tri-state reconcile (better-custom style):
-//  apply ("[x]") — take the fresh value
-//  keep  ("[-]") — keep stored metadata
-//  remove("[ ]") — drop the model
-// Absent decisions fall back to safe defaults: add/update → apply, vanished → keep.
+// Tri-state reconcile: apply takes the fresh value, keep preserves stored metadata,
+// remove drops the model. Missing decisions default to apply (new/changed) or keep.
 
 export type ChangeKind = "added" | "updated" | "removed"
 export type TriDecision = "apply" | "keep" | "remove"
@@ -15,6 +12,8 @@ export interface ModelChange {
   kind: ChangeKind
   /** Human-readable summary, e.g. "context 128000 -> 1000000, image [+]". */
   detail: string
+  /** Lowercase filter text: lets a host dialog isolate one decision class. */
+  searchText?: string
 }
 
 function hasImage(model: EnrichedModel): boolean {
@@ -42,28 +41,20 @@ function describeUpdate(id: string, current: EnrichedModel, fresh: EnrichedModel
   return `${id}: ${parts.join(", ")}`
 }
 
-/**
- * Merge a fresh (probed) model onto an existing stored entry for decision
- * "apply". Fresh wins for every field it provides (name, limit.context/output,
- * modalities, reasoning, reasoningLevels, cost when present); stored-only
- * fields survive when fresh lacks them (family, status, attachment, tool_call,
- * temperature, release_date, limit.input, cost). Explicit field merge — a blind
- * spread would wipe stored limit.input and the stored-only metadata.
- */
+/** Fresh wins for the fields it reports; stored-only metadata survives. Explicit
+ * merge — a blind spread would wipe stored limit.input and cost. */
 export function mergeAppliedModel(stored: EnrichedModel, fresh: EnrichedModel): EnrichedModel {
   const merged: EnrichedModel = {
     name: fresh.name,
     limit: { ...stored.limit, ...fresh.limit },
     modalities: fresh.modalities ?? stored.modalities,
   }
-  // Stored-only metadata: carry forward when fresh lacks it.
   if (stored.family !== undefined) merged.family = stored.family
   if (stored.release_date !== undefined) merged.release_date = stored.release_date
   if (stored.status !== undefined) merged.status = stored.status
   if (stored.attachment !== undefined) merged.attachment = stored.attachment
   if (stored.temperature !== undefined) merged.temperature = stored.temperature
   if (stored.tool_call !== undefined) merged.tool_call = stored.tool_call
-  // Fresh wins for capability flags it reports; absent means "not advertised".
   if (fresh.reasoning) merged.reasoning = true
   if (fresh.cost) {
     merged.cost = { ...fresh.cost }
@@ -73,8 +64,6 @@ export function mergeAppliedModel(stored: EnrichedModel, fresh: EnrichedModel): 
   if (fresh.reasoningLevels?.length) {
     merged.reasoningLevels = [...fresh.reasoningLevels]
   } else if (merged.reasoning && stored.reasoningLevels?.length) {
-    // Levels only make sense on a reasoning model — keep stored ones when the
-    // fresh probe still advertises reasoning but no explicit effort options.
     merged.reasoningLevels = [...stored.reasoningLevels]
   }
   return merged
@@ -92,15 +81,15 @@ export function diffModels(
     seen.add(p.id)
     const stored = current[p.id]
     if (!stored) {
-      changes.push({ id: p.id, kind: "added", detail: `${p.id}: new model` })
+      changes.push({ id: p.id, kind: "added", detail: `${p.id}: new model`, searchText: `${p.id} added` })
       continue
     }
     const detail = describeUpdate(p.id, stored, probedToEnriched(p, displayStyle))
-    if (detail) changes.push({ id: p.id, kind: "updated", detail })
+    if (detail) changes.push({ id: p.id, kind: "updated", detail, searchText: `${p.id} updated` })
   }
   for (const id of Object.keys(current)) {
     if (!seen.has(id)) {
-      changes.push({ id, kind: "removed", detail: `${id}: vanished upstream (unsupported)` })
+      changes.push({ id, kind: "removed", detail: `${id}: vanished upstream (unsupported)`, searchText: `${id} removed` })
     }
   }
   return changes
@@ -118,7 +107,6 @@ export function applyDecisions(
   for (const p of fresh) {
     const decision = decisions[p.id] ?? "apply"
     if (!current[p.id]) {
-      // Added upstream.
       if (decision === "apply") next[p.id] = probedToEnriched(p, displayStyle)
     } else if (decision === "apply") {
       next[p.id] = mergeAppliedModel(current[p.id], probedToEnriched(p, displayStyle))

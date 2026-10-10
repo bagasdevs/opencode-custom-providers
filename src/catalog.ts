@@ -3,14 +3,21 @@ import * as path from "node:path"
 import * as os from "node:os"
 import { createRequire } from "node:module"
 import { normalizeModelId } from "./endpoint.js"
-
-const require = createRequire(import.meta.url)
-const { version: PKG_VERSION } = require("../package.json")
+import { isValidUrl } from "./security.js"
+// Read the manifest when running from the repo, but stay loadable when the file is bundled
+// into a plugins directory where ../package.json does not exist.
+const PKG_VERSION: string = (() => {
+  try {
+    return (createRequire(import.meta.url)("../package.json") as { version?: string }).version ?? "0.0.0"
+  } catch {
+    return "0.0.0"
+  }
+})()
 
 const MODELS_DEV_URL = "https://models.dev/api.json"
 const CACHE_TTL = 6 * 60 * 60 * 1000 // 6 hours
 
-// Resolved per call so mocked homedir values apply in tests.
+// Per call: tests mock homedir.
 function cacheDir(): string {
   return path.join(os.homedir() || "/tmp", ".cache", "opencode-custom-providers")
 }
@@ -56,10 +63,6 @@ export interface ModelsDevProvider {
   models: Record<string, ModelsDevModel>
 }
 
-// ── models.dev cache + lookup ──
-
-// Module-level singleton: shared across providers per process. Cleared by
-// clearModelsDevCache() so the next call rebuilds it with fresh data.
 let lookupMap: Map<string, ModelsDevModel> | null = null
 let lookupPromise: Promise<Map<string, ModelsDevModel>> | null = null
 let catalogPromise: Promise<Record<string, ModelsDevProvider>> | null = null
@@ -92,7 +95,6 @@ function writeCache(data: Record<string, ModelsDevProvider>): void {
       { mode: 0o600 },
     )
   } catch {
-    // ignore write errors
   }
 }
 
@@ -112,7 +114,6 @@ async function fetchModelsDevCatalog(): Promise<Record<string, ModelsDevProvider
       return data
     }
   } catch {
-    // Ignore fetch error, fall back to stale cache if available
   }
 
   if (entry) {
@@ -157,7 +158,6 @@ export function clearModelsDevCache(): void {
     const mtimeMs = fs.statSync(file).mtimeMs
     if (Date.now() - mtimeMs > CACHE_TTL) fs.unlinkSync(file)
   } catch {
-    // ignore
   }
 }
 
@@ -170,7 +170,6 @@ export interface CatalogSite {
   modelCount: number
 }
 
-/** Raw catalog access for flows that need more than the lookup map. */
 export async function getCatalog(): Promise<Record<string, ModelsDevProvider>> {
   if (!catalogPromise) {
     catalogPromise = fetchModelsDevCatalog()
@@ -178,12 +177,11 @@ export async function getCatalog(): Promise<Record<string, ModelsDevProvider>> {
   return catalogPromise
 }
 
-/** Pure summary of a catalog for pickers. Exported for tests. */
 export function summarizeCatalog(
   catalog: Record<string, ModelsDevProvider>,
 ): CatalogSite[] {
   return Object.values(catalog)
-    .filter(p => p && typeof p.id === "string" && p.models && Object.keys(p.models).length > 0)
+    .filter(p => p && typeof p.id === "string" && p.api && isValidUrl(p.api) && p.models && Object.keys(p.models).length > 0)
     .map(p => ({
       id: p.id,
       name: p.name || p.id,

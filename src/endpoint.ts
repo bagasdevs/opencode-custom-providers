@@ -12,7 +12,55 @@ export function normalizeModelId(id: string): string {
   return normalized.replaceAll(":", "-")
 }
 
-// ── endpoint model response types ──
+// B4: repair the two common near-miss inputs — a bare host and a copy-pasted
+// full endpoint path — instead of rejecting them.
+const ENDPOINT_PATH_SUFFIXES = ["/chat/completions", "/messages", "/responses", "/models"]
+
+function schemelessHostIsLocal(raw: string): boolean {
+  const host = raw.split(/[/?#]/, 1)[0]
+  if (host.startsWith("[")) return true
+  if (/^::1($|:)/.test(host)) return true
+  const name = host.split(":", 1)[0]
+  if (/^localhost$/i.test(name) || /\.local$/i.test(name)) return true
+  if (name === "0.0.0.0") return true
+  const octets = /^(\d{1,3})(?:\.(\d{1,3}))?(?:\.\d{1,3}){0,2}$/.exec(name)
+  if (!octets) return false
+  const first = Number(octets[1])
+  const second = octets[2] === undefined ? undefined : Number(octets[2])
+  return (
+    first === 127 ||
+    first === 10 ||
+    (first === 192 && second === 168) ||
+    (first === 172 && second !== undefined && second >= 16 && second <= 31)
+  )
+}
+
+/** Infer the scheme for a bare host, strip a trailing "/" and a pasted
+ * endpoint path, and leave an already-valid base URL untouched. */
+export function normalizeBaseUrl(raw: string): string {
+  let candidate = raw.trim()
+  if (candidate === "") return candidate
+  if (!/^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(candidate)) {
+    candidate = `${schemelessHostIsLocal(candidate) ? "http" : "https"}://${candidate}`
+  }
+  candidate = candidate.replace(/\/+$/, "")
+  const schemeEnd = candidate.indexOf("://")
+  if (candidate.indexOf("/", schemeEnd + 3) === -1) return candidate
+  let changed = true
+  while (changed) {
+    changed = false
+    const lower = candidate.toLowerCase()
+    for (const suffix of ENDPOINT_PATH_SUFFIXES) {
+      if (lower.endsWith(suffix)) {
+        candidate = candidate.slice(0, candidate.length - suffix.length).replace(/\/+$/, "")
+        changed = true
+        break
+      }
+    }
+  }
+  return candidate
+}
+
 
 export interface EndpointModelResponse {
   id: string
@@ -35,7 +83,6 @@ export interface EndpointModelResponse {
   supported_parameters?: string[]
 }
 
-// ── endpoint discovery ──
 
 export async function fetchEndpointModels(
   baseURL: string,

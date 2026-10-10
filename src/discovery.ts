@@ -3,18 +3,13 @@ import { probeEndpoint, probedToEnriched } from "./probe.js"
 import { DEFAULT_FLAVOR, type ProviderFlavor } from "./flavors.js"
 import type { DisplayStyle, EnrichedModel } from "./enrich.js"
 
-// Barrel: preserve the historical "./discovery.js" import surface so existing
-// importers (commands.ts, server.ts, tui.ts, types.ts, tests) keep working.
 export { normalizeModelId, fetchEndpointModels } from "./endpoint.js"
 export { clearModelsDevCache } from "./catalog.js"
-export { buildEnrichedModel } from "./enrich.js"
+// M3: buildEnrichedModel was the second, unclamped resolver. resolveModel
+// (src/probe.ts) is now the only one, so the clamp cannot be bypassed.
 export type { DisplayStyle, EnrichedModel } from "./enrich.js"
 
-/**
- * Discover models through the tiered probe pipeline (models.dev > local rules >
- * API fallback > defaults) for the given endpoint flavor. Throws on invalid
- * URLs / unreachable endpoints — every caller wraps this in a try/catch.
- */
+/** Throws on invalid URLs or unreachable endpoints. */
 export async function discoverAndEnrich(
   baseURL: string,
   apiKey?: string,

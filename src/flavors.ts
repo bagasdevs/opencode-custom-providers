@@ -1,5 +1,4 @@
-// Endpoint flavors: how to list models + protocol-level fallback limits.
-// Tier-4 ("API fallback") numbers follow better-custom conventions.
+// Endpoint flavors: model listing and protocol fallback limits.
 
 export type ProviderFlavor =
   | "openai-chat"
@@ -24,40 +23,40 @@ export interface FlavorSpec {
 export const FLAVORS: Record<ProviderFlavor, FlavorSpec> = {
   "openai-chat": {
     flavor: "openai-chat",
-    label: "OpenAI Chat Completions",
-    description: "OpenAI-compatible /models endpoint (default)",
+    label: "OpenAI-compatible (most common)",
+    description: "Choose this for OpenAI, OpenRouter, DeepSeek, Groq, Together, LM Studio, vLLM and most other services. If unsure, choose this one",
     listPaths: ["/models"],
     listShape: "openai-list",
     fallbackLimits: { context: 128_000, output: 4_096 },
   },
   "openai-responses": {
     flavor: "openai-responses",
-    label: "OpenAI Responses",
-    description: "Responses-style gateways with an OpenAI /models list",
+    label: "OpenAI Responses API",
+    description: "Only for services that explicitly ask for the 'Responses' API. If unsure, choose the first option",
     listPaths: ["/models"],
     listShape: "openai-list",
     fallbackLimits: { context: 128_000, output: 4_096 },
   },
   anthropic: {
     flavor: "anthropic",
-    label: "Anthropic Messages",
-    description: "No list API — add from catalog or by hand",
+    label: "Anthropic (Claude)",
+    description: "Claude models; the endpoint cannot list models, so add them from the catalog",
     listPaths: [],
     listShape: "none",
     fallbackLimits: { context: 200_000, output: 32_000 },
   },
   gemini: {
     flavor: "gemini",
-    label: "Gemini",
-    description: "Google Generative Language list API",
+    label: "Google Gemini",
+    description: "Google's Gemini API (get a key at aistudio.google.com)",
     listPaths: ["/v1beta/models", "/models"],
     listShape: "gemini-list",
     fallbackLimits: { context: 1_000_000, output: 64_000 },
   },
   ollama: {
     flavor: "ollama",
-    label: "Ollama",
-    description: "Local Ollama daemon (/api/tags)",
+    label: "Ollama (on this computer)",
+    description: "A local Ollama install, usually http://localhost:11434",
     listPaths: ["/api/tags", "/models"],
     listShape: "ollama-tags",
     fallbackLimits: { context: 128_000, output: 4_096 },
@@ -73,12 +72,15 @@ export function parseFlavor(value: string | undefined): ProviderFlavor | null {
   return found ?? null
 }
 
+// Names opencode ships itself. Adding a custom provider under one of these would rewrite
+// that provider's settings, so the wizard offers a suffixed name instead.
 const BUILT_IN_IDS = new Set([
-  "openai", "anthropic", "google", "gemini", "deepseek", "xai",
-  "groq", "ollama", "openrouter", "azure", "bedrock", "vertex",
+  "opencode", "openai", "anthropic", "google", "gemini", "deepseek", "xai", "grok",
+  "groq", "ollama", "openrouter", "azure", "bedrock", "vertex", "mistral",
+  "together", "fireworks", "cerebras", "perplexity", "cohere", "moonshot", "zhipu",
+  "lmstudio", "lm-studio", "vllm", "llamacpp", "llama-cpp", "github-copilot", "copilot",
 ])
 
-/** Suggest `<id>-custom` when a provider id collides with a well-known built-in. */
 export function collisionSuggestion(providerId: string): string | null {
   if (BUILT_IN_IDS.has(providerId.toLowerCase())) {
     return `${providerId}-custom`

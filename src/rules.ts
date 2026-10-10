@@ -3,8 +3,8 @@ import * as path from "node:path"
 import * as os from "node:os"
 import { normalizeModelId } from "./endpoint.js"
 
-// Tier-3 ("local rules"): built-in known-model table. Ids are normalized
-// before matching so relay-decorated ids still hit (e.g. "gpt-5@20250807").
+// Built-in known-model table. Ids are normalized before matching so relay
+// decorations ("gpt-5@20250807") still hit.
 
 export interface RuleMeta {
   context: number

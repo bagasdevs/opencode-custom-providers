@@ -119,7 +119,6 @@ export interface AddProviderParams {
   apiKey?: string
   displayStyle?: DisplayStyle
   overwrite?: boolean
-  /** Endpoint flavor to probe with (defaults to openai-chat). */
   flavor?: ProviderFlavor
 }
 
@@ -227,13 +226,7 @@ export async function persistProviderApiKey(
   }
 }
 
-/**
- * Rotate a provider's API key: persist the new key to the auth store, then
- * drop any legacy inline copy so getApiKey can never read a stale key again.
- * (Mirrors the TUI "API key" action, which deletes options.apiKey after a
- * successful persist.) Throws — and keeps the inline key — when the store
- * rejects the write.
- */
+/** Persist the new key, then drop any legacy inline copy; throws if the store rejects the write. */
 export async function rotateProviderApiKey(
   providerEntry: ProviderConfig,
   providerId: string,
@@ -244,7 +237,6 @@ export async function rotateProviderApiKey(
   if (providerEntry.options) delete providerEntry.options.apiKey
 }
 
-// ── manage flows (better-custom style wizard logic, UI-agnostic) ──
 
 import { probeEndpoint, type ProbedModel } from "./probe.js"
 import { probeDeveloperRole } from "./deep-probe.js"
@@ -280,7 +272,7 @@ export async function reprobeProvider(
   const displayStyle: DisplayStyle = provider.displayStyle ?? "slug"
   const flavor = getProviderFlavor(provider)
   if (FLAVORS[flavor].listShape === "none") {
-    // No list API for this flavor — nothing to reconcile, no network needed.
+// Flavor has no list API.
     return { changes: [], fresh: [] }
   }
   const fresh = await probeEndpoint(baseURL, apiKey, flavor)
@@ -341,7 +333,7 @@ function parseToggle(value: string): boolean | null {
   return null
 }
 
-/** Edit one stored model field in place. Returns an error string or null. */
+/** Returns an error string or null. */
 export function editModelField(
   models: Record<string, EnrichedModel>,
   modelId: string,
@@ -359,7 +351,9 @@ export function editModelField(
     }
     case "context":
     case "output": {
-      if (!model.limit) return `Model '${modelId}' has no 'limit' configured.`
+      // M2: `limit` exists but its fields may be absent when unmeasured, so the
+      // editor seeds the object rather than refusing to edit.
+      model.limit ??= {}
       const n = Number(value)
       if (!Number.isInteger(n) || n <= 0) {
         return `'${field}' must be a positive integer (got '${value}').`
@@ -386,12 +380,10 @@ export function editModelField(
   }
 }
 
-/** Read-only view of a provider's stored models. */
 export function getStoredModels(provider: ProviderConfig): Record<string, EnrichedModel> {
   return (provider.models ?? {}) as unknown as Record<string, EnrichedModel>
 }
 
-/** Bulk delete stored models. Returns deleted ids and unknown ids. */
 export function deleteModels(
   models: Record<string, EnrichedModel>,
   ids: string[],
@@ -411,7 +403,6 @@ export function deleteModels(
   return { deleted, missing }
 }
 
-/** Move a legacy inline options.apiKey into the auth store. Best-effort. */
 export async function migrateInlineKey(
   provider: ProviderConfig,
   providerId: string,

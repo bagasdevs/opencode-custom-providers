@@ -1,4 +1,5 @@
 import type { TuiPlugin, TuiPluginApi } from "@opencode-ai/plugin/tui"
+import { setup as setupV2 } from "./tui-v2.js"
 import type { DisplayStyle } from "./discovery.js"
 import type { ProviderConfig } from "./types.js"
 import {
@@ -24,7 +25,8 @@ import { describeProbed, buildCatalogModels, parseModelIds, previewManualModels 
 import { listCatalogSites } from "./catalog.js"
 import { createTuiBridge } from "./opencode-client.js"
 
-export const id = "opencode-custom-providers"
+import { id } from "./ids.js"
+export { id }
 
 function showPrompt(api: TuiPluginApi, title: string, placeholder?: string): Promise<string | null> {
   return new Promise((resolve) => {
@@ -325,7 +327,21 @@ export const tui: TuiPlugin = async (api: TuiPluginApi) => {
         providers[providerId] = result.providerEntry
         await bridge.updateProviders(providers)
 
-        api.ui.toast({ message: result.message, variant: "success" })
+        // M11: say what was learned and what to do next, not just "done".
+        const entry = result.providerEntry
+        const stored = Object.keys(entry.models ?? {}).length
+        const learned: string[] = []
+        for (const model of Object.values(entry.models ?? {})) {
+          const limits = (model as { limit?: { context?: number; output?: number } }).limit
+          if (limits?.context) learned.push("context")
+          if (limits?.output) learned.push("max output")
+          break
+        }
+        const detail = learned.length ? ` Learned: ${[...new Set(learned)].join(", ")}.` : " No extra details were measured for it."
+        api.ui.toast({
+          message: `${result.message}${detail} Run /model to pick one of its ${stored} model${stored === 1 ? "" : "s"}.`,
+          variant: "success",
+        })
       },
     },
     {
@@ -360,11 +376,15 @@ export const tui: TuiPlugin = async (api: TuiPluginApi) => {
           return
         }
         const mode = await showSelect(api, `${rep.changes.length} change(s) found`, [
-          { title: "Apply all", value: "all", description: "Take every fresh value, keep vanished" },
           { title: "Review each", value: "each", description: "Decide per model" },
+          { title: "Keep what I have (safest)", value: "keep", description: "Leave every model as it is" },
           { title: "Cancel", value: "cancel", description: "Change nothing" },
         ])
         if (!mode || mode === "cancel") return
+        if (mode === "keep") {
+          api.ui.toast({ message: "Kept what you have. Nothing was changed.", variant: "info" })
+          return
+        }
 
         const decisions: Record<string, TriDecision> = {}
         if (mode === "each") {
@@ -373,8 +393,8 @@ export const tui: TuiPlugin = async (api: TuiPluginApi) => {
             const fresh = freshById.get(change.id)
             const source = fresh ? `\n${describeProbed(fresh)}` : ""
             const choice = await showSelect<TriDecision>(api, `[${change.kind}] ${change.id}`, [
-              { title: "Apply", value: "apply", description: `${change.detail}${source}` },
               { title: "Keep stored", value: "keep", description: "Leave the current entry unchanged" },
+              { title: "Apply update", value: "apply", description: `${change.detail}${source}` },
               { title: "Remove", value: "remove", description: "Delete the stored entry" },
             ])
             if (!choice) return
@@ -501,11 +521,9 @@ export const tui: TuiPlugin = async (api: TuiPluginApi) => {
             return
           }
           if (!key) {
-            // Best-effort: no stored credential is a fine outcome.
             try {
               await bridge.removeApiKey?.(providerId)
             } catch {
-              // Ignore removal errors.
             }
           }
           if (!key && provider.options) delete provider.options.apiKey
@@ -543,10 +561,8 @@ export const tui: TuiPlugin = async (api: TuiPluginApi) => {
           ])
           if (!field) return
           const m = models[modelId]
-          if ((field === "context" || field === "output") && !m.limit) {
-            api.ui.toast({ message: `Model '${modelId}' has no 'limit' configured.`, variant: "error" })
-            return
-          }
+          // M2: an unmeasured limit is absent, not a refusal to edit.
+          m.limit ??= {}
           const current = field === "name"
             ? m.name
             : field === "context"
@@ -658,4 +674,4 @@ export const tui: TuiPlugin = async (api: TuiPluginApi) => {
   ])
 }
 
-export default { id, tui }
+export default { id, tui, setup: setupV2 }

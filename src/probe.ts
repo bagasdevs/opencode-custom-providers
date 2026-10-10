@@ -6,9 +6,12 @@ import { FLAVORS, DEFAULT_FLAVOR, type ProviderFlavor } from "./flavors.js"
 import { deepenEndpointItems } from "./deep-probe.js"
 import type { DisplayStyle, EnrichedModel } from "./enrich.js"
 
-// Tiered metadata resolution (better-custom style):
-// Detected > models.dev > local-rules > api-fallback > default.
-// Cost is never guessed: only Detected or models.dev.
+// Tiered resolution: detected > models.dev > local-rules > api-fallback > default.
+// Cost is only ever taken from detected data or models.dev.
+//
+// Non-goals, kept out on purpose (not oversights — do not add them here):
+// per-model HTTP headers / per-model baseURL override, $ENV and !command auth
+// serialization, models.yml runtime selection, video-input display.
 
 export type MetadataSource =
   | "detected"
@@ -34,7 +37,17 @@ export interface ProbedModel {
   costSource?: MetadataSource
 }
 
+/** Loopback, private LAN ranges and mDNS: never upgraded to https. */
+function isLocalHost(host: string): boolean {
+  if (host === "localhost" || host === "::1" || host === "[::1]" || host === "0.0.0.0") return true
+  if (host.endsWith(".local")) return true
+  if (host.startsWith("127.") || host.startsWith("10.") || host.startsWith("192.168.")) return true
+  const second = /^172\.(\d+)\./.exec(host)
+  return second !== null && Number(second[1]) >= 16 && Number(second[1]) <= 31
+}
+
 /** Path-adaptive candidates: as-given → +/v1 → http→https (non-local only). */
+
 export function buildCandidateUrls(baseURL: string): string[] {
   const out: string[] = []
   const push = (u: string) => {
@@ -49,13 +62,12 @@ export function buildCandidateUrls(baseURL: string): string[] {
       push(new URL(`${cleanPath}/v1`, url.origin).toString())
     }
     const host = url.hostname.toLowerCase()
-    if (url.protocol === "http:" && host !== "localhost" && host !== "127.0.0.1" && host !== "::1") {
+    if (url.protocol === "http:" && !isLocalHost(host)) {
       const https = new URL(url.toString())
       https.protocol = "https:"
       push(https.toString())
     }
   } catch {
-    // Invalid URL — single candidate; the fetcher will reject it.
   }
   return out
 }
@@ -78,7 +90,6 @@ function parseCapabilities(item: EndpointModelResponse) {
   return { toolCall, reasoning, temperature }
 }
 
-/** Exact reasoning effort options advertised inline (e.g. OpenAI effort_options). */
 function parseEffortOptions(item: EndpointModelResponse): string[] | undefined {
   const raw = item.capabilities?.reasoning
   if (typeof raw !== "object" || raw === null) return undefined
@@ -132,7 +143,6 @@ async function fetchFlavorModels(
       const items = normalizeListShape(raw, spec.listShape)
       if (items.length > 0) return items
     } catch {
-      // Try the next path.
     }
   }
   return []
@@ -219,7 +229,10 @@ export function resolveModel(
     probed.contextSource = "api-fallback"
   }
 
-  // Max output (clamped: degenerate catalog limits collapse to context).
+  // Max output, clamped so a degenerate catalog limit cannot collapse output
+  // onto context (which makes every reply impossible).
+  // resolveModel is the ONLY resolver: every write path (probe, manual entry,
+  // catalog) routes through it, so this clamp cannot be bypassed.
   const epOutput = [item.max_completion_tokens, item.max_output_tokens]
     .find((v): v is number => typeof v === "number")
   if (epOutput !== undefined) {
@@ -239,7 +252,7 @@ export function resolveModel(
     probed.maxOutput = Math.max(1, Math.floor(probed.context / 2))
   }
 
-  // Reasoning (default on). Advertised effort options count as detected.
+  // Reasoning. Advertised effort options count as detected. No "default on" tier.
   if (caps.reasoning || meta?.reasoning) {
     probed.reasoning = true
     probed.reasoningSource = caps.reasoning ? "detected" : "models.dev"
@@ -249,10 +262,10 @@ export function resolveModel(
   } else if (rule) {
     probed.reasoning = rule.meta.reasoning
     probed.reasoningSource = "local-rules"
-  } else {
-    probed.reasoning = true
-    probed.reasoningSource = "default"
   }
+  // No tier produced evidence: `reasoning` and `reasoningSource` stay undefined.
+  // Absence is the statement "not measured" and lets the host's own fallback
+  // decide; asserting true or false here would invent a capability.
   if (levels && levels.length > 0) probed.reasoningLevels = levels
 
   // Image input (default off).
@@ -302,14 +315,27 @@ function modelsUrlFor(candidate: string, flavor: ProviderFlavor): string {
   }
 }
 
+/** M10: the winning candidate is the variant that actually answered, so the
+ * caller can store that URL instead of re-guessing `/v1` on every re-probe.
+ * `listUnsupported` is the distinct third outcome — the flavor exposes no model
+ * list at all — which must not be folded into "it answered but listed nothing". */
+export interface ProbeOutcome {
+  models: ProbedModel[]
+  baseURL: string
+  listUnsupported: boolean
+}
+
 /** Probe an endpoint across adaptive URL candidates. Throws when nothing answers. */
-export async function probeEndpoint(
+export async function probeEndpointOutcome(
   baseURL: string,
   apiKey?: string,
   flavor: ProviderFlavor = DEFAULT_FLAVOR,
-): Promise<ProbedModel[]> {
+): Promise<ProbeOutcome> {
   if (!isValidUrl(baseURL)) {
     throw new Error("Invalid Base URL. Please enter a full URL (including https://).")
+  }
+  if (FLAVORS[flavor].listShape === "none") {
+    return { models: [], baseURL, listUnsupported: true }
   }
   const lookup = await getLookupMap()
   const customs = loadCustomRules()
@@ -331,16 +357,28 @@ export async function probeEndpoint(
           apiKey,
           flavor,
         })
-        return deep.map(item => resolveModel(item, lookup, flavor, customs))
+        return {
+          models: deep.map(item => resolveModel(item, lookup, flavor, customs)),
+          baseURL: candidate,
+          listUnsupported: false,
+        }
       }
     } catch (error) {
       lastError = sanitizeErrorMessage(error)
     }
   }
-  if (FLAVORS[flavor].listShape === "none") return []
   throw new Error(
     `Probe failed for ${baseURL}` + (lastError ? `: ${lastError}` : ". No models found — retry or add models manually."),
   )
+}
+
+/** Convenience wrapper: the models only, for callers that do not store the URL. */
+export async function probeEndpoint(
+  baseURL: string,
+  apiKey?: string,
+  flavor: ProviderFlavor = DEFAULT_FLAVOR,
+): Promise<ProbedModel[]> {
+  return (await probeEndpointOutcome(baseURL, apiKey, flavor)).models
 }
 
 /** Convert a resolved probe into a stored model entry. */
@@ -348,12 +386,15 @@ export function probedToEnriched(
   probed: ProbedModel,
   displayStyle: DisplayStyle,
 ): EnrichedModel {
+  // M2: `limit` carries only measured fields. A fallback ("api-fallback") or an
+  // assumption ("default") is not a measurement, so it is left absent and the
+  // host's own limit fallback applies instead of a real-looking invented number.
+  const limit: { context?: number; output?: number } = {}
+  if (hasEvidence(probed.contextSource)) limit.context = probed.context
+  if (hasEvidence(probed.maxOutputSource)) limit.output = probed.maxOutput
   const model: EnrichedModel = {
     name: displayStyle === "slug" ? probed.id : probed.name ?? probed.id,
-    limit: {
-      context: probed.context ?? 128_000,
-      output: probed.maxOutput ?? 4_096,
-    },
+    limit,
     modalities: probed.image
       ? { input: ["text", "image"], output: ["text"] }
       : { input: ["text"], output: ["text"] },
@@ -371,26 +412,74 @@ export function probedToEnriched(
   return model
 }
 
-function fmtNum(n: number | undefined): string {
-  return n === undefined ? "?" : String(n)
+/** m8: `default` means "no measurement". `api-fallback` is a protocol guess,
+ * which is also not a measurement of this model - both are unevidenced. */
+function hasEvidence(source: MetadataSource | undefined): boolean {
+  return source !== undefined && source !== "default" && source !== "api-fallback"
 }
 
-/** One-line honest summary with per-field source tags. */
-export function describeProbed(p: ProbedModel): string {
-  const parts = [
-    p.id,
-    `ctx ${fmtNum(p.context)} [${p.contextSource ?? "?"}]`,
-    `out ${fmtNum(p.maxOutput)} [${p.maxOutputSource ?? "?"}]`,
-    `reasoning ${p.reasoning ? (p.reasoningLevels?.length ? `(${p.reasoningLevels.join("/")})` : "[+]") : "[-]"} [${p.reasoningSource ?? "?"}]`,
-    `image ${p.image ? "[+]" : "[-]"} [${p.imageSource ?? "?"}]`,
-  ]
-  if (p.cost && p.costSource) {
-    parts.push(`cost $${p.cost.input}/$${p.cost.output} [${p.costSource}]`)
+export function describeProbed(probed: ProbedModel): string {
+  // M1: bare = measured here, tagged = sourced from elsewhere (a guess about
+  // *this* endpoint), absent = no measurement at all.
+  const lines = [`Model: ${probed.id}`]
+  if (hasEvidence(probed.contextSource)) {
+    lines.push(`  Context window: ${probed.context?.toLocaleString("en-US") ?? "unknown"} tokens${tag(probed.contextSource)}`)
   }
-  return parts.join(" | ")
+  if (hasEvidence(probed.maxOutputSource)) {
+    lines.push(`  Longest reply: ${probed.maxOutput?.toLocaleString("en-US") ?? "unknown"} tokens${tag(probed.maxOutputSource)}`)
+  }
+  if (probed.reasoning !== undefined) {
+    const levels = probed.reasoningLevels?.length ? ` (${probed.reasoningLevels.join("/")})` : ""
+    lines.push(`  Thinking: ${probed.reasoning ? "supported" : "not supported"}${levels}${tag(probed.reasoningSource)}`)
+  }
+  if (hasEvidence(probed.imageSource)) {
+    lines.push(`  Image input: ${probed.image ? "supported" : "not supported"}${tag(probed.imageSource)}`)
+  }
+  if (probed.cost) {
+    lines.push(
+      `  Price: $${probed.cost.input} per million input tokens, $${probed.cost.output} per million output tokens${tag(probed.costSource)}`,
+    )
+  }
+  return lines.join("\n")
 }
 
-/** Convert a models.dev catalog entry into a resolved probe (source: models.dev). */
+/** M1: nothing for a value measured on this endpoint, `[source]` for one taken
+ * from a database or a rule, i.e. a guess about this endpoint. */
+function tag(source: MetadataSource | undefined): string {
+  return source === "detected" || source === undefined ? "" : ` [${source}]`
+}
+
+/** M1 one-liner for picker rows: `128K [models.dev]`, `context 128K [local rules]`,
+ * and nothing at all when the value was never measured. */
+export function describeProbedShort(probed: ProbedModel): string {
+  const parts: string[] = []
+  if (hasEvidence(probed.contextSource)) {
+    parts.push(`context ${compactNum(probed.context)}${tag(probed.contextSource)}`)
+  }
+  if (hasEvidence(probed.maxOutputSource)) {
+    parts.push(`out ${compactNum(probed.maxOutput)}${tag(probed.maxOutputSource)}`)
+  }
+  if (probed.reasoning !== undefined && hasEvidence(probed.reasoningSource)) {
+    parts.push(`thinking ${probed.reasoning ? "on" : "off"}${tag(probed.reasoningSource)}`)
+  }
+  if (hasEvidence(probed.imageSource)) {
+    parts.push(`image ${probed.image ? "on" : "off"}${tag(probed.imageSource)}`)
+  }
+  return parts.join(", ")
+}
+
+function compactNum(value: number | undefined): string {
+  if (value === undefined) return "?"
+  if (value >= 1_000_000) return `${trimZero(value / 1_000_000)}M`
+  if (value >= 1_000) return `${trimZero(value / 1_000)}K`
+  return String(value)
+}
+
+function trimZero(value: number): string {
+  const rounded = Math.round(value * 10) / 10
+  return Number.isInteger(rounded) ? String(rounded) : rounded.toFixed(1)
+}
+
 export function catalogToProbed(model: ModelsDevModel): ProbedModel {
   const probed: ProbedModel = { id: model.id, name: model.name }
   probed.context = model.limit.context
@@ -414,12 +503,8 @@ export function catalogToProbed(model: ModelsDevModel): ProbedModel {
   return probed
 }
 
-/**
- * Parse a comma-separated model id selection.
- * Returns undefined when `raw` is omitted (= select every catalog model) and
- * [] when `raw` is provided but contains no ids — callers must reject the
- * empty selection instead of silently falling back to "all models".
- */
+/** Returns undefined when omitted (= all models) and [] when provided but empty;
+ * callers must reject the empty selection. */
 export function parseModelIds(raw: string | undefined): string[] | undefined {
   if (raw === undefined) return undefined
   return raw.split(",").map(s => s.trim()).filter(s => s.length > 0)
@@ -466,7 +551,15 @@ export async function buildCatalogModels(
   return { baseURL: site.api, models, resolved, missing }
 }
 
-/** Resolve hand-typed ids against live catalog+rules (no endpoint traffic). */
+/** Resolve hand-typed ids against the local rules and the models.dev lookup.
+ *
+ * B2 contract, which callers depend on and must not break:
+ *  - network-free with respect to the provider endpoint: no request is made to
+ *    the user's baseURL. (models.dev is a public metadata DB, not the endpoint.)
+ *  - an empty `ids` list resolves to an empty result; the helper does NOT fall
+ *    back to "every known model". The caller (manualAdd) rejects an empty
+ *    selection before calling, and must keep doing so. */
+
 export async function previewManualModels(
   ids: string[],
   flavor?: ProviderFlavor,

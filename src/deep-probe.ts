@@ -1,8 +1,7 @@
 import type { EndpointModelResponse } from "./endpoint.js"
 import type { ProviderFlavor } from "./flavors.js"
 
-// Deep detection sources (better-custom style). Every source is best-effort:
-// failures resolve to undefined and the tier falls through to the next source.
+// Deep detection sources, best-effort: failures fall through to the next tier.
 
 export interface DetailPatch {
   context_length?: number
@@ -152,7 +151,6 @@ export async function fetchPublicCatalog(origin: string): Promise<Map<string, De
     try {
       map.set(rec["id"] as string, patchFromRecord(rec))
     } catch {
-      // Skip malformed entries.
     }
   }
   return map
@@ -175,7 +173,6 @@ export async function fetchOllamaShow(base: string, name: string): Promise<Detai
   return patch
 }
 
-/** Merge a patch into a list item copy, keeping existing sane values. */
 export function applyPatch(
   item: EndpointModelResponse,
   patch: DetailPatch,
@@ -218,26 +215,22 @@ function needsDeep(item: EndpointModelResponse): boolean {
   const hasCtx = (item.context_window ?? item.max_model_len ?? item.context_length) !== undefined
   const hasOut = (item.max_completion_tokens ?? item.max_output_tokens) !== undefined
   const hasCost = item.input_cost !== undefined || item.output_cost !== undefined
-  // Effort options ride along whenever a detail fetch happens for a real gap;
-  // already-advertised options flow through resolveModel without extra traffic.
   return !hasCtx || !hasOut || !hasCost
 }
 
-/** Gap-fill one item from deep sources. Never throws; returns the item as-is on failure. */
+/** Never throws: returns the item unchanged on failure. */
 export async function deepenItem(
   item: EndpointModelResponse,
   ctx: DeepenContext,
   publicCatalog?: Map<string, DetailPatch>,
 ): Promise<EndpointModelResponse> {
   let merged = item
-  // Free sources first: OpenRouter-style inline pricing.
   try {
     const inline = patchFromRecord(item as unknown as Record<string, unknown>)
     if (inline.input_cost !== undefined || inline.output_cost !== undefined) {
       merged = applyPatch(merged, inline)
     }
   } catch {
-    // Ignore normalization errors.
   }
   if (!needsDeep(merged)) return merged
 
@@ -252,28 +245,24 @@ export async function deepenItem(
       merged = applyPatch(merged, await fetchModelDetail(ctx.modelsUrl, item.id, ctx.apiKey))
       if (!needsDeep(merged)) return merged
     } catch {
-      // Fall through to LiteLLM.
     }
     try {
       merged = applyPatch(merged, await fetchLitellmInfo(ctx.origin, item.id, ctx.apiKey))
     } catch {
-      // Gap stays; tier falls through.
     }
     return merged
   }
 
   if (ctx.flavor === "ollama") {
     try {
-      // ctx.origin is the daemon base; ctx.modelsUrl already ends in /api/tags.
       merged = applyPatch(merged, await fetchOllamaShow(ctx.origin, item.id))
     } catch {
-      // Gap stays; tier falls through.
     }
   }
   return merged
 }
 
-/** Bounded-concurrency pool: runs fn over items with at most size in flight, order-preserving. */
+/** Runs fn over items with at most `size` in flight, order-preserving. */
 export async function mapPool<T, R>(
   items: T[],
   size: number,
@@ -295,7 +284,6 @@ export async function mapPool<T, R>(
   return out
 }
 
-/** Gap-fill a whole list in parallel (failures keep the original item). */
 export async function deepenEndpointItems(
   items: EndpointModelResponse[],
   ctx: DeepenContext,
@@ -318,11 +306,7 @@ export async function deepenEndpointItems(
   })
 }
 
-/**
- * Developer-role probe: POST a 1-token chat with role "developer".
- * Returns false when the gateway explicitly rejects the role,
- * undefined when inconclusive (no key, auth failure, network error).
- */
+/** POST a 1-token chat with role "developer": false = rejected, undefined = inconclusive. */
 export async function probeDeveloperRole(
   baseURL: string,
   apiKey?: string,

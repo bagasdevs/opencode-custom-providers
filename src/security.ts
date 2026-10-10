@@ -25,16 +25,31 @@ export function sanitizeUrl(raw: string): string {
   }
 }
 
+/** m6: strip control characters from any string that reaches a host dialog's
+ * `description` or `searchText`. Host widgets own key handling; the only way to
+ * inherit the "delete key lands in the search box" defect is to feed them a raw
+ * control character. */
+export function sanitizeDialogText(text: string): string {
+  return text.replaceAll(/[\u0000-\u001f\u007f]/g, "")
+}
+
 export function sanitizeErrorMessage(error: unknown): string {
   let message = error instanceof Error ? error.message : String(error)
-  
+
   message = message.replaceAll(/https?:\/\/[^\s"'`<>]+/gi, (match) =>
     sanitizeUrl(match),
   )
 
-  return message
+  const redacted = message
     .replaceAll(/Bearer\s+[^\s]+/gi, "Bearer [REDACTED]")
     .replaceAll(/api[_-]?key[=:]\s*[^\s&]+/gi, "api_key=[REDACTED]")
     .replaceAll(/sk-[a-zA-Z0-9_-]+/g, "sk-[REDACTED]")
+    .replaceAll(/\b(key|token|access_token|password)=[^\s&]+/gi, "$1=[REDACTED]")
+
+  // These strings reach dialogs and toasts: no raw control character may survive.
+  const printable = sanitizeDialogText(redacted)
+
+  // Keep the surfaced detail short: these strings reach dialogs and toasts.
+  return printable.length > 400 ? `${printable.slice(0, 400)}…` : printable
 }
 

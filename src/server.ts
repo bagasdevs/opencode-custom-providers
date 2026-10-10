@@ -23,8 +23,10 @@ import { parseFlavor, FLAVORS, DEFAULT_FLAVOR } from "./flavors.js"
 import type { TriDecision } from "./reconcile.js"
 import { shouldDiscover, getApiKey, type ProviderConfig, type OpenCodeConfig } from "./types.js"
 import { createServerBridge } from "./opencode-client.js"
+import { setup as setupV2 } from "./server-v2.js"
 
-export const id = "opencode-custom-providers"
+import { id } from "./ids.js"
+export { id }
 
 export type { ProviderConfig, OpenCodeConfig } from "./types.js"
 export { getApiKey } from "./types.js"
@@ -46,7 +48,7 @@ export const server: Plugin = async ({ client }) => {
       const eligible = Object.entries(cfg.provider).filter(
         (entry): entry is [string, ProviderConfig] => shouldDiscover(entry[1]),
       )
-      // Concurrent discovery (at most 4 in flight), no logs here so log order stays sequential.
+// Concurrent discovery, 4 in flight; no logs here so log order stays sequential.
       const outcomes: PromiseSettledResult<Awaited<ReturnType<typeof discoverAndEnrich>>>[] = []
       for (let i = 0; i < eligible.length; i += 4) {
         const chunk = eligible.slice(i, i + 4)
@@ -523,4 +525,4 @@ export const server: Plugin = async ({ client }) => {
   }
 }
 
-export default { id, server }
+export default { id, server, setup: setupV2 }
