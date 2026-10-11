@@ -323,9 +323,9 @@ describe("re-probe keeps hand edits", () => {
     reasoning: true,
     reasoningLevels: ["low", "medium", "high"],
     context: 128000,
-    contextSource: "endpoint",
+    contextSource: "detected",
     maxOutput: 4096,
-    maxOutputSource: "endpoint",
+    maxOutputSource: "detected",
     image: true,
   }
 
@@ -341,7 +341,7 @@ describe("re-probe keeps hand edits", () => {
   it("still takes the endpoint's values for a draft nobody edited", () => {
     const untouched = probedToDraftKeepingEdits(undefined, probed as never)
     expect(readModelFields(untouched)).toMatchObject({ context: 128000, output: 4096 })
-    const probed2 = { ...probed, context: 999, maxOutput: 111, contextSource: "endpoint", maxOutputSource: "endpoint" }
+    const probed2 = { ...probed, context: 999, maxOutput: 111, contextSource: "detected", maxOutputSource: "detected" }
     const again = probedToDraftKeepingEdits(untouched, probed2 as never)
     expect(readModelFields(again)).toMatchObject({ context: 999, output: 111 })
   })
@@ -349,7 +349,7 @@ describe("re-probe keeps hand edits", () => {
   it("still refreshes a field the editor does not own", () => {
     const tuned: Draft = {}
     applyModelFields(tuned, { image: true, reasoning: "high" })
-    const remeasured = { ...probed, context: 2000000, contextSource: "endpoint" }
+    const remeasured = { ...probed, context: 2000000, contextSource: "detected" }
     const after = probedToDraftKeepingEdits(tuned, remeasured as never)
     expect(readModelFields(after).context).toBe(2000000)
   })

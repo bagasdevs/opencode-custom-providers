@@ -1,5 +1,5 @@
 import type { DisplayStyle, EnrichedModel } from "./enrich.js"
-import { probedToEnriched, type ProbedModel } from "./probe.js"
+import { isAuthoritative, probedToEnriched, type MetadataSource, type ProbedModel } from "./probe.js"
 
 // Tri-state reconcile: apply takes the fresh value, keep preserves stored metadata,
 // remove drops the model. Missing decisions default to apply (new/changed) or keep.
@@ -20,12 +20,50 @@ function hasImage(model: EnrichedModel): boolean {
   return model.modalities?.input.includes("image") ?? false
 }
 
-function describeUpdate(id: string, current: EnrichedModel, fresh: EnrichedModel): string | null {
+/** Probe sources for the fields a merge may apply, so a guess cannot overwrite
+ * a stored measurement. Built from a ProbedModel by applyDecisions/diffModels. */
+export interface FreshSources {
+  contextSource?: MetadataSource
+  maxOutputSource?: MetadataSource
+  costSource?: MetadataSource
+  imageSource?: MetadataSource
+}
+
+function sourcesOf(probed: ProbedModel): FreshSources {
+  return {
+    contextSource: probed.contextSource,
+    maxOutputSource: probed.maxOutputSource,
+    costSource: probed.costSource,
+    imageSource: probed.imageSource,
+  }
+}
+
+/** Legacy callers pass no sources, so they keep the old overwrite behaviour;
+ * with sources present, only a measurement or a catalog value may win. */
+function freshWins(sources: FreshSources | undefined, source: MetadataSource | undefined): boolean {
+  return sources === undefined || isAuthoritative(source)
+}
+
+function describeUpdate(
+  id: string,
+  current: EnrichedModel,
+  fresh: EnrichedModel,
+  sources?: FreshSources,
+): string | null {
   const parts: string[] = []
-  if (current.limit.context !== fresh.limit.context) {
+  // A field the fresh probe did not measure, or may not overwrite, is not an update.
+  if (
+    fresh.limit.context !== undefined &&
+    (current.limit.context === undefined || freshWins(sources, sources?.contextSource)) &&
+    current.limit.context !== fresh.limit.context
+  ) {
     parts.push(`context ${current.limit.context} -> ${fresh.limit.context}`)
   }
-  if (current.limit.output !== fresh.limit.output) {
+  if (
+    fresh.limit.output !== undefined &&
+    (current.limit.output === undefined || freshWins(sources, sources?.maxOutputSource)) &&
+    current.limit.output !== fresh.limit.output
+  ) {
     parts.push(`max-out ${current.limit.output} -> ${fresh.limit.output}`)
   }
   if (current.name !== fresh.name) {
@@ -34,7 +72,11 @@ function describeUpdate(id: string, current: EnrichedModel, fresh: EnrichedModel
   if (!!current.reasoning !== !!fresh.reasoning) {
     parts.push(fresh.reasoning ? "reasoning [+]" : "reasoning [-]")
   }
-  if (hasImage(current) !== hasImage(fresh)) {
+  if (
+    fresh.modalities !== undefined &&
+    (current.modalities === undefined || freshWins(sources, sources?.imageSource)) &&
+    hasImage(current) !== hasImage(fresh)
+  ) {
     parts.push(hasImage(fresh) ? "image [+]" : "image [-]")
   }
   if (parts.length === 0) return null
@@ -42,12 +84,29 @@ function describeUpdate(id: string, current: EnrichedModel, fresh: EnrichedModel
 }
 
 /** Fresh wins for the fields it reports; stored-only metadata survives. The
- * merge is explicit because a blind spread would wipe stored limit.input and cost. */
-export function mergeAppliedModel(stored: EnrichedModel, fresh: EnrichedModel): EnrichedModel {
+ * merge is explicit because a blind spread would wipe stored limit.input and cost.
+ *
+ * With `sources` given, a fresh value only replaces a stored one when its probe
+ * source is authoritative (detected or models.dev); a local rule or a fallback is
+ * a guess and keeps the stored measurement. Without `sources` the legacy
+ * overwrite behaviour is kept, so existing callers stay valid. */
+export function mergeAppliedModel(stored: EnrichedModel, fresh: EnrichedModel, sources?: FreshSources): EnrichedModel {
+  const limit: EnrichedModel["limit"] = { ...stored.limit }
+  if (fresh.limit.context !== undefined && (stored.limit.context === undefined || freshWins(sources, sources?.contextSource))) {
+    limit.context = fresh.limit.context
+  }
+  if (fresh.limit.input !== undefined) limit.input = fresh.limit.input
+  if (fresh.limit.output !== undefined && (stored.limit.output === undefined || freshWins(sources, sources?.maxOutputSource))) {
+    limit.output = fresh.limit.output
+  }
+  const modalities =
+    fresh.modalities !== undefined && (stored.modalities === undefined || freshWins(sources, sources?.imageSource))
+      ? fresh.modalities
+      : stored.modalities
   const merged: EnrichedModel = {
     name: fresh.name,
-    limit: { ...stored.limit, ...fresh.limit },
-    modalities: fresh.modalities ?? stored.modalities,
+    limit,
+    modalities,
   }
   if (stored.family !== undefined) merged.family = stored.family
   if (stored.release_date !== undefined) merged.release_date = stored.release_date
@@ -56,7 +115,7 @@ export function mergeAppliedModel(stored: EnrichedModel, fresh: EnrichedModel): 
   if (stored.temperature !== undefined) merged.temperature = stored.temperature
   if (stored.tool_call !== undefined) merged.tool_call = stored.tool_call
   if (fresh.reasoning) merged.reasoning = true
-  if (fresh.cost) {
+  if (fresh.cost && (stored.cost === undefined || freshWins(sources, sources?.costSource))) {
     merged.cost = { ...fresh.cost }
   } else if (stored.cost) {
     merged.cost = { ...stored.cost }
@@ -87,7 +146,7 @@ export function diffModels(
       changes.push({ id: p.id, kind: "added", detail: `${p.id}: new model`, searchText: `${p.id} added` })
       continue
     }
-    const detail = describeUpdate(p.id, stored, probedToEnriched(p, displayStyle))
+    const detail = describeUpdate(p.id, stored, probedToEnriched(p, displayStyle), sourcesOf(p))
     if (detail) changes.push({ id: p.id, kind: "updated", detail, searchText: `${p.id} updated` })
   }
   for (const id of Object.keys(current)) {
@@ -112,7 +171,7 @@ export function applyDecisions(
     if (!current[p.id]) {
       if (decision === "apply") next[p.id] = probedToEnriched(p, displayStyle)
     } else if (decision === "apply") {
-      next[p.id] = mergeAppliedModel(current[p.id], probedToEnriched(p, displayStyle))
+      next[p.id] = mergeAppliedModel(current[p.id], probedToEnriched(p, displayStyle), sourcesOf(p))
     } else if (decision === "remove") {
       delete next[p.id]
     }

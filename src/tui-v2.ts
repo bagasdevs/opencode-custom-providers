@@ -617,55 +617,142 @@ async function wizardApplyReconcile(ctx: V2TuiContext): Promise<void> {
   await ctx.ui.dialog.alert({ title: `Update ${provider.id}`, message: applied.message })
 }
 
+// Esc at the menu is the only way out: an Esc or an empty value in an inner dialog
+// returns to this loop, so the user can make several changes in one visit instead of
+// restarting the wizard after every field.
 async function wizardEdit(ctx: V2TuiContext): Promise<void> {
   const provider = await pickProvider(ctx)
   if (!provider) return
-  const flavorLabel = FLAVORS[provider.flavor as keyof typeof FLAVORS]?.label ?? provider.flavor
-  const styleLabel = provider.displayStyle === "name" ? "Friendly name" : "Model id"
-  const field = await ctx.ui.dialog.select({
-    title: `What do you want to change for ${provider.id}?`,
-    options: [
-      { title: "Base URL", value: "baseURL", description: `Currently: ${provider.baseURL}` },
-      { title: "API type", value: "flavor", description: `Currently: ${flavorLabel}` },
-      { title: "How models are listed", value: "displayStyle", description: `Currently: ${styleLabel}` },
-      { title: "API key", value: "apiKey", description: "Replace the saved key" },
-      { title: "A model's settings", value: "model", description: "Change thinking, image input, or token limits" },
-    ],
-  })
-  if (!field) {
-    cancelled(ctx)
-    return
-  }
-  if (field === "model") {
-    await wizardEditModels(ctx, provider.id)
-    return
-  }
-  let value: string | undefined
-  if (field === "flavor") {
-    value = await ctx.ui.dialog.select({ title: "API type", options: FLAVOR_OPTIONS })
-  } else if (field === "displayStyle") {
-    value = await ctx.ui.dialog.select({ title: "How should models appear in the model list?", options: SIMPLE_OPTIONS })
-  } else if (field === "apiKey") {
-    value = await ctx.ui.dialog.prompt({
-      title: "New API key",
-      description: "Paste the new key. Press Esc to keep the current one. It is saved securely and can be replaced again later.",
+  for (;;) {
+    const flavorLabel = FLAVORS[provider.flavor as keyof typeof FLAVORS]?.label ?? provider.flavor
+    const styleLabel = provider.displayStyle === "name" ? "Friendly name" : "Model id"
+    const field = await ctx.ui.dialog.select({
+      title: `What do you want to change for ${provider.id}?`,
+      options: [
+        { title: "Base URL", value: "baseURL", description: `Currently: ${provider.baseURL}` },
+        { title: "API type", value: "flavor", description: `Currently: ${flavorLabel}` },
+        { title: "How models are listed", value: "displayStyle", description: `Currently: ${styleLabel}` },
+        { title: "API key", value: "apiKey", description: "Replace the saved key" },
+        { title: "A model's settings", value: "model", description: "Change thinking, image input, or token limits" },
+        { title: "Delete models", value: "deleteModels", description: "Remove several models from this provider at once" },
+        { title: "Rename provider", value: "rename", description: `Currently: ${provider.id}` },
+      ],
     })
-  } else {
-    value = await ctx.ui.dialog.prompt({
-      title: "New Base URL",
-      description: "Must start with https:// (or http:// for a local server) and usually ends in /v1",
-      value: provider.baseURL,
+    if (!field) {
+      cancelled(ctx)
+      return
+    }
+    if (field === "model") {
+      await wizardEditModels(ctx, provider.id)
+      continue
+    }
+    if (field === "deleteModels") {
+      await wizardDeleteModels(ctx, provider.id)
+      continue
+    }
+    if (field === "rename") {
+      await wizardRename(ctx, provider)
+      continue
+    }
+    let value: string | undefined
+    if (field === "flavor") {
+      value = await ctx.ui.dialog.select({ title: "API type", options: FLAVOR_OPTIONS })
+    } else if (field === "displayStyle") {
+      value = await ctx.ui.dialog.select({ title: "How should models appear in the model list?", options: SIMPLE_OPTIONS })
+    } else if (field === "apiKey") {
+      value = await ctx.ui.dialog.prompt({
+        title: "New API key",
+        description: "Paste the new key. Press Esc to keep the current one. Leave it empty and the current key is kept. It is saved securely and can be replaced again later.",
+      })
+    } else {
+      value = await ctx.ui.dialog.prompt({
+        title: "New Base URL",
+        description: "Must start with https:// (or http:// for a local server) and usually ends in /v1",
+        value: provider.baseURL,
+      })
+    }
+    // Esc, or an empty value, means "nothing to change here": back to the menu, and no
+    // RPC call, so an accidental keypress cannot write a half-finished value.
+    if (value === undefined || value === "") continue
+    const { message } = await call<{ message: string }>(ctx, "edit", {
+      providerId: provider.id,
+      [field]: value,
     })
+    await ctx.ui.dialog.alert({ title: `Edit ${provider.id}`, message })
   }
-  if (value === undefined || value === "") {
-    cancelled(ctx)
+}
+
+// Backs out silently on Esc: a nested dialog returns to the edit wizard's menu.
+async function wizardDeleteModels(ctx: V2TuiContext, providerId: string): Promise<void> {
+  for (;;) {
+    const raw = await ctx.ui.dialog.prompt({
+      title: `Delete models from ${providerId}`,
+      description:
+        "Type one or more model ids separated by commas. Every id has to exist or nothing is deleted. Run /list-models to see the ids.",
+      placeholder: "model-a, model-b",
+    })
+    if (raw === undefined || raw.trim() === "") return
+    const ids = raw
+      .split(",")
+      .map(modelId => modelId.trim())
+      .filter(modelId => modelId.length > 0)
+    if (ids.length === 0) {
+      ctx.ui.toast.show({ message: "Type at least one model id, separated by commas.", variant: "warning" })
+      continue
+    }
+    const confirmed = await ctx.ui.dialog.confirm({
+      title: "Delete these models?",
+      message: `Delete ${ids.length} model${ids.length === 1 ? "" : "s"} from '${providerId}'?\n\n${ids.join(", ")}\n\nThis cannot be undone. The provider keeps its other models, its address and its key.`,
+      label: { confirm: "Delete them", cancel: "Keep them" },
+    })
+    if (!confirmed) return
+    const { status, message } = await call<{ status: string; message: string; deleted: number }>(ctx, "deleteModels", { providerId, modelIds: raw })
+    // A refusal carries its reason in the message, so an id that does not exist comes
+    // back here for another try instead of ending the wizard.
+    if (status === "ok") {
+      done(ctx, message)
+      return
+    }
+    if (status === "unknown_provider") {
+      fail(ctx, message)
+      return
+    }
+    await ctx.ui.dialog.alert({ title: `Delete models from ${providerId}`, message })
+  }
+}
+
+// Takes the live provider row so a successful rename keeps the wizard pointed at the
+// new name for the rest of the visit.
+async function wizardRename(ctx: V2TuiContext, provider: ProviderRow): Promise<void> {
+  const raw = await ctx.ui.dialog.prompt({
+    title: `Rename ${provider.id}`,
+    description:
+      "A new short name for this provider. Letters, numbers, hyphens and underscores only. Its models, address and key stay as they are.",
+    placeholder: "my-proxy",
+  })
+  if (raw === undefined || raw.trim() === "") return
+  const newId = raw.trim()
+  if (!ID_PATTERN.test(newId)) {
+    fail(ctx, `'${newId}' cannot be used as a name. Use only letters, numbers, hyphens and underscores: for example my-proxy.`)
     return
   }
-  const { message } = await call<{ message: string }>(ctx, "edit", {
-    providerId: provider.id,
-    [field]: value,
+  if (newId === provider.id) {
+    fail(ctx, `'${newId}' is already the name of this provider. Pick a different name.`)
+    return
+  }
+  const confirmed = await ctx.ui.dialog.confirm({
+    title: "Rename this provider?",
+    message: `Rename '${provider.id}' to '${newId}'?\n\nIts models, address and key are kept. An API key saved under '${provider.id}' stays stored under that name.`,
+    label: { confirm: "Rename it", cancel: "Keep the current name" },
   })
-  await ctx.ui.dialog.alert({ title: `Edit ${provider.id}`, message })
+  if (!confirmed) return
+  const { status, message } = await call<{ status: string; message: string }>(ctx, "renameProvider", { providerId: provider.id, newId })
+  if (status === "ok") {
+    provider.id = newId
+    done(ctx, message)
+    return
+  }
+  fail(ctx, message)
 }
 
 async function wizardDelete(ctx: V2TuiContext): Promise<void> {

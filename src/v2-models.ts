@@ -1,4 +1,4 @@
-import { probedToEnriched, type ProbedModel } from "./probe.js"
+import { isAuthoritative, probedToEnriched, type ProbedModel } from "./probe.js"
 import type { DisplayStyle, EnrichedModel } from "./enrich.js"
 
 // A reasoning model without advertised effort options gets the full set, so
@@ -62,23 +62,66 @@ export function probedToDraft(probed: ProbedModel, displayStyle: DisplayStyle = 
 /** The fields the model editor owns. A re-probe must not undo them. */
 const EDITOR_OWNED = ["capabilities", "limit", "reasoning", "thinkingLevelMap", "variants", "edited"] as const
 
+/** Fields a re-probe may overwrite only with an authoritative source. Keys the
+ * fresh probe leaves absent (a fallback or the image default) mean "not measured"
+ * and must never clobber a stored value. */
+const GATED: ReadonlySet<keyof V2ModelDraft> = new Set(["capabilities", "limit", "cost", "variants"])
+
 /** A probed draft, keeping the values a user set by hand.
  *
  * A plain re-probe reports what the endpoint says about a model and would otherwise
  * replace the whole draft, so a tuned thinking level, image toggle, or token limit
  * would silently revert on the next refresh. Fields the endpoint measures and the
- * editor does not own (name, cost, family, status) still update. */
+ * editor does not own (name, cost, family, status) still update.
+ *
+ * This is the chosen enforcement point: the v2 write path (server-v2.ts) only
+ * reaches stored data through this function, while applyEnrichedToDraft runs
+ * before any stored value exists and cannot see the probe sources. */
 export function probedToDraftKeepingEdits(
   existing: V2ModelDraft | undefined,
   probed: ProbedModel,
   displayStyle: DisplayStyle = "slug",
 ): V2ModelDraft {
   const fresh = probedToDraft(probed, displayStyle)
-  if (!existing || existing.edited !== true) return fresh
+  if (!existing) return fresh
   const kept = { ...fresh } as Record<string, unknown>
   const source = existing as Record<string, unknown>
-  for (const key of EDITOR_OWNED) {
-    if (source[key] !== undefined) kept[key] = source[key]
+  if (existing.edited === true) {
+    // The editor wins outright, whatever the probe sources say.
+    for (const key of EDITOR_OWNED) {
+      if (source[key] !== undefined) kept[key] = source[key]
+    }
+    return kept as V2ModelDraft
+  }
+  // An unedited draft: a stored value survives unless the fresh probe measured
+  // it with an authoritative source. A local rule or a fallback is a guess about
+  // the model in general, not a measurement of this endpoint.
+  for (const key of GATED) {
+    if (source[key] === undefined) continue
+    if (key === "limit") {
+      // Merge per field: stored extras such as limit.input survive, and a
+      // subfield the probe only guessed keeps the stored value.
+      const merged = { ...(source.limit as NonNullable<V2ModelDraft["limit"]>) }
+      if (fresh.limit?.context !== undefined && isAuthoritative(probed.contextSource)) {
+        merged.context = fresh.limit.context
+      }
+      if (fresh.limit?.output !== undefined && isAuthoritative(probed.maxOutputSource)) {
+        merged.output = fresh.limit.output
+      }
+      if (fresh.limit?.input !== undefined) merged.input = fresh.limit.input
+      kept.limit = merged
+      continue
+    }
+    const freshValue = fresh[key]
+    const measured =
+      key === "capabilities"
+        ? isAuthoritative(probed.imageSource)
+        : key === "variants"
+          ? probed.reasoningLevels !== undefined
+          : isAuthoritative(probed.costSource)
+    // The image default, the reasoning level fallback and a guessed source are
+    // not facts about this endpoint, so the stored block survives.
+    kept[key] = freshValue !== undefined && measured ? freshValue : source[key]
   }
   return kept as V2ModelDraft
 }

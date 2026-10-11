@@ -377,23 +377,22 @@ export const setup = async (ctx: V2Context): Promise<void> => {
     await ctx.storage.set(REMOVED_KEY, [...removed])
   }
 
-  const persist = async () => {
+  // One provider's persisted row. persist and the rename rebuild both write through this,
+  // so the two paths can never drift on which fields are stored.
+  const recordFor = (providerId: string, entry: ManagedProvider) => ({
+    baseURL: entry.baseURL,
+    flavor: entry.flavor,
+    displayStyle: entry.displayStyle,
+    models: Object.fromEntries(discovered.get(providerId) ?? new Map<string, V2ModelDraft>()),
+  })
+
+  const persist = async (override?: Record<string, unknown>) => {
     // Refuse to write when the initial load failed: the in-memory state is not the
     // user's real state, and writing it would replace good data with an empty set.
     if (!loaded) throw new Error("The saved provider list could not be read, so nothing was written. Restart opencode and try again.")
     await ctx.storage.set(
       STORAGE_KEY,
-      Object.fromEntries(
-        [...managed].map(([providerId, entry]) => [
-          providerId,
-          {
-            baseURL: entry.baseURL,
-            flavor: entry.flavor,
-            displayStyle: entry.displayStyle,
-            models: Object.fromEntries(discovered.get(providerId) ?? new Map<string, V2ModelDraft>()),
-          },
-        ]),
-      ),
+      override ?? Object.fromEntries([...managed].map(([providerId, entry]) => [providerId, recordFor(providerId, entry)])),
     )
   }
 
@@ -1246,6 +1245,169 @@ if ((managed.has(input.providerId) || candidates.has(input.providerId)) && !inpu
       }
       return { message: lines.join("\n") }
     },
+
+    deleteModels: async (input: {
+      providerId: string
+      modelIds: string
+    }): Promise<{ status: "ok" | "unknown_provider" | "unknown_model" | "invalid"; message: string; deleted: number }> => {
+      // The same guard listModels carries: a provider this plugin never adopted has no
+      // map here, and there is nothing of ours to delete from it.
+      const models = discovered.get(input.providerId)
+      if (!models) {
+        return {
+          status: "unknown_provider",
+          message: `There is no provider named '${input.providerId}'. Run /list-custom-providers to see your providers.`,
+          deleted: 0,
+        }
+      }
+      const wanted = parseModelIds(input.modelIds) ?? []
+      if (wanted.length === 0) {
+        return { status: "invalid", message: "Type one or more model ids separated by commas.", deleted: 0 }
+      }
+      // All-or-nothing, the way the v1 tool behaved: one typo in the list deletes nothing
+      // rather than a wrong subset of the models.
+      const unknown = wanted.filter(modelId => !models.has(modelId))
+      if (unknown.length > 0) {
+        return {
+          status: "unknown_model",
+          message: `Provider '${input.providerId}' has no model named '${unknown.join("', '")}'. Nothing was deleted.`,
+          deleted: 0,
+        }
+      }
+      for (const modelId of wanted) models.delete(modelId)
+      // Persist before publishing to the host, so a crash right after cannot lose the deletion.
+      await persist()
+      // Pure replay: re-read the map, so a reload after a later re-add does not remove
+      // the model the user added back.
+      await ctx.provider.transform((providers) => {
+        for (const modelId of wanted) {
+          if (!discovered.get(input.providerId)?.has(modelId)) providers.models.remove(input.providerId, modelId)
+        }
+      })
+      await reloadQuietly()
+      return {
+        status: "ok",
+        message: `Removed ${wanted.length} model${wanted.length === 1 ? "" : "s"} from '${input.providerId}': ${wanted.join(", ")}.`,
+        deleted: wanted.length,
+      }
+    },
+
+    renameProvider: async (input: {
+      providerId: string
+      newId: string
+    }): Promise<{ status: "ok" | "invalid" | "unknown_provider"; message: string }> => {
+      const entry = managed.get(input.providerId)
+      // The same split remove() draws: a provider from opencode's own config has no
+      // storage row to rename, and the editor can write a record but never delete one,
+      // so renaming it would leave the old row behind under its old name.
+      if (!entry) {
+        return candidates.has(input.providerId)
+          ? {
+              status: "invalid",
+              message: `'${input.providerId}' comes from your opencode config, not from this plugin, so it cannot be renamed here.\nRemove its entry from your opencode config to change its name.`,
+            }
+          : {
+              status: "unknown_provider",
+              message: `There is no provider named '${input.providerId}'. Run /list-custom-providers to see your providers.`,
+            }
+      }
+      const clean = input.newId.trim()
+      if (!validId(clean)) {
+        return { status: "invalid", message: "The provider name may only contain letters, numbers, hyphens and underscores. Example: my-proxy" }
+      }
+      if (clean === input.providerId) {
+        return { status: "invalid", message: `'${clean}' is already the name of this provider. Pick a different name.` }
+      }
+      // Same guard add and manualAdd carry: renaming onto a built-in id would take that
+      // provider over and clear its integration.
+      const clash = collisionSuggestion(clean)
+      if (clash) {
+        return { status: "invalid", message: `'${clean}' is the name of a provider opencode already has, so renaming to it would change that provider. Use '${clash}' instead.` }
+      }
+      if (managed.has(clean) || candidates.has(clean)) {
+        // Refused rather than replaced: the editor has no delete, so "replace" would
+        // silently merge two providers' models under one id. v1 refused the same way.
+        return {
+          status: "invalid",
+          message: `'${clean}' is already one of your providers, so renaming would merge the two.\nPick a different name, or remove '${clean}' with /delete-provider first.`,
+        }
+      }
+      // A removed id stays disabled on every replay, so the marker has to go or the
+      // renamed provider would come back switched off.
+      removed.delete(clean)
+      // The renamed entry keeps its slot: a delete-then-set appends to the end of the
+      // map and would rewrite the stored key order of every provider written after it.
+      const renamed = new Map<string, ManagedProvider>()
+      for (const [providerId, value] of managed) renamed.set(providerId === input.providerId ? clean : providerId, value)
+      managed.clear()
+      for (const [providerId, value] of renamed) managed.set(providerId, value)
+      const discoveredModels = discovered.get(input.providerId)
+      const previousModelIds = [...(discoveredModels?.keys() ?? [])]
+      discovered.delete(input.providerId)
+      if (discoveredModels) discovered.set(clean, discoveredModels)
+      const probed = lastProbeModels.get(input.providerId)
+      if (probed) {
+        lastProbeModels.set(clean, probed)
+        lastProbeModels.delete(input.providerId)
+      }
+      const probedCount = lastProbe.get(input.providerId)
+      if (probedCount !== undefined) {
+        lastProbe.set(clean, probedCount)
+        lastProbe.delete(input.providerId)
+      }
+      // defineProperty, not assignment: "__proto__" is a legal provider id (underscores
+      // pass validId) and a legal own key, but plain assignment would set the record's
+      // prototype instead of a key, and the provider would vanish from storage on the
+      // next write. This is the bug v1's renameProviderEntry was fixed for.
+      const record: Record<string, unknown> = {}
+      for (const [providerId, value] of managed) {
+        Object.defineProperty(record, providerId, { value: recordFor(providerId, value), enumerable: true, writable: true, configurable: true })
+      }
+      // The renamed record goes first: the provider is reachable under its new name from
+      // this point on, even if the process dies before the old name is retired.
+      await persist(record)
+      // The old name has to die, and `removed` is the only marker that keeps a stale host
+      // record from being re-derived as a candidate on every replay. Persisted, so the old
+      // name stays gone across restarts; /add-provider clears it if the user wants it back.
+      removed.add(input.providerId)
+      await ctx.storage.set(REMOVED_KEY, [...removed])
+      await registerIntegration(clean)
+      // Pure replay, and it reads the maps at replay time: a later reload republishes the
+      // provider that exists now, not the one that was renamed when this ran.
+      await ctx.provider.transform((providers) => {
+        // The editor can write a record but never delete one, so the old row is retired the
+        // way remove does it: switched off, with its models dropped. Skipped once the old id
+        // is back in use, so a later re-add is not undone by this replay.
+        if (!managed.has(input.providerId) && !discovered.has(input.providerId)) {
+          providers.update(input.providerId, (provider) => {
+            provider.settings = { ...(provider.settings ?? {}), dynamic: false }
+          })
+          for (const modelId of previousModelIds) providers.models.remove(input.providerId, modelId)
+        }
+        const current = managed.get(clean)
+        if (current) {
+          providers.update(clean, (provider) => {
+            provider.activation = "enabled"
+            if (!provider.package) provider.package = OPENAI_COMPATIBLE
+            provider.settings = { ...(provider.settings ?? {}), baseURL: current.baseURL }
+            provider.integrationID = undefined
+          })
+        }
+        for (const [modelId, draft] of discovered.get(clean) ?? new Map<string, V2ModelDraft>()) {
+          providers.models.update(clean, modelId, (model) => {
+            mergeDiscoveredIntoStored(model, draft)
+            model[DISCOVERED] = true
+          })
+        }
+      })
+      await reloadQuietly()
+      return {
+        status: "ok",
+        message:
+          `Done. '${input.providerId}' is now called '${clean}'. Its models and settings are unchanged.\n` +
+          `An API key saved for '${input.providerId}' stays stored under that name, so if sign-in fails afterwards, add the key again with /edit-provider.`,
+      }
+    },
   }
 
   await ctx.rpc.register(
@@ -1396,6 +1558,47 @@ if ((managed.has(input.providerId) || candidates.has(input.providerId)) && !inpu
           },
           output: MESSAGE_OUTPUT,
         },
+        deleteModels: {
+          input: {
+            type: "object",
+            properties: {
+              providerId: { type: "string", description: "Which provider to delete models from" },
+              modelIds: { type: "string", description: "Comma-separated model ids; every id must exist or nothing is deleted" },
+            },
+            required: ["providerId", "modelIds"],
+            additionalProperties: false,
+          },
+          output: {
+            type: "object",
+            properties: {
+              status: { type: "string", enum: ["ok", "unknown_provider", "unknown_model", "invalid"] },
+              message: { type: "string" },
+              deleted: { type: "number" },
+            },
+            required: ["status", "message", "deleted"],
+            additionalProperties: false,
+          },
+        },
+        renameProvider: {
+          input: {
+            type: "object",
+            properties: {
+              providerId: { type: "string", description: "Current provider ID" },
+              newId: { type: "string", description: "New provider ID (letters, numbers, hyphens and underscores only)" },
+            },
+            required: ["providerId", "newId"],
+            additionalProperties: false,
+          },
+          output: {
+            type: "object",
+            properties: {
+              status: { type: "string", enum: ["ok", "invalid", "unknown_provider"] },
+              message: { type: "string" },
+            },
+            required: ["status", "message"],
+            additionalProperties: false,
+          },
+        },
         reprobe: {
           input: {
             type: "object",
@@ -1489,6 +1692,8 @@ if ((managed.has(input.providerId) || candidates.has(input.providerId)) && !inpu
       listModels: input => ops.listModels(input as Parameters<typeof ops.listModels>[0]),
       editModel: input => ops.editModel(input as Parameters<typeof ops.editModel>[0]),
       remove: input => ops.remove((input as { providerId: string }).providerId),
+      deleteModels: input => ops.deleteModels(input as Parameters<typeof ops.deleteModels>[0]),
+      renameProvider: input => ops.renameProvider(input as Parameters<typeof ops.renameProvider>[0]),
       reprobe: input => ops.reprobe((input as { providerId: string }).providerId),
       apply: input => ops.apply(input as { providerId: string; decisions: string }),
       refresh: () => ops.refresh(),
@@ -1642,6 +1847,44 @@ if ((managed.has(input.providerId) || candidates.has(input.providerId)) && !inpu
         additionalProperties: false,
       },
       execute: async (raw) => ({ content: (await ops.catalogAdd(raw as Parameters<typeof ops.catalogAdd>[0])).message }),
+    })
+
+    tools.add({
+      name: "delete-models",
+      description:
+        "Delete models from a provider by id (comma-separated). All ids must exist or nothing is deleted; " +
+        "the provider keeps its address, key and remaining models.",
+      input: {
+        type: "object",
+        properties: {
+          providerId: { type: "string", description: "Which provider to update" },
+          modelIds: { type: "string", description: "Comma-separated model ids to delete" },
+        },
+        required: ["providerId", "modelIds"],
+        additionalProperties: false,
+      },
+      execute: async (raw) => ({
+        content: (await ops.deleteModels(raw as Parameters<typeof ops.deleteModels>[0])).message,
+      }),
+    })
+
+    tools.add({
+      name: "rename-provider",
+      description:
+        "Rename one of your custom providers. Keeps its position, models and settings; " +
+        "an API key saved under the old name is not moved.",
+      input: {
+        type: "object",
+        properties: {
+          providerId: { type: "string", description: "Which provider to rename" },
+          newId: { type: "string", description: "New provider ID (letters, numbers, hyphens and underscores only)" },
+        },
+        required: ["providerId", "newId"],
+        additionalProperties: false,
+      },
+      execute: async (raw) => ({
+        content: (await ops.renameProvider(raw as Parameters<typeof ops.renameProvider>[0])).message,
+      }),
     })
 
     tools.add({

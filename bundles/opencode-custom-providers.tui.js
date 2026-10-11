@@ -642,52 +642,128 @@ async function wizardApplyReconcile(ctx) {
 async function wizardEdit(ctx) {
   const provider = await pickProvider(ctx);
   if (!provider) return;
-  const flavorLabel = FLAVORS[provider.flavor]?.label ?? provider.flavor;
-  const styleLabel = provider.displayStyle === "name" ? "Friendly name" : "Model id";
-  const field = await ctx.ui.dialog.select({
-    title: `What do you want to change for ${provider.id}?`,
-    options: [
-      { title: "Base URL", value: "baseURL", description: `Currently: ${provider.baseURL}` },
-      { title: "API type", value: "flavor", description: `Currently: ${flavorLabel}` },
-      { title: "How models are listed", value: "displayStyle", description: `Currently: ${styleLabel}` },
-      { title: "API key", value: "apiKey", description: "Replace the saved key" },
-      { title: "A model's settings", value: "model", description: "Change thinking, image input, or token limits" }
-    ]
-  });
-  if (!field) {
-    cancelled(ctx);
-    return;
-  }
-  if (field === "model") {
-    await wizardEditModels(ctx, provider.id);
-    return;
-  }
-  let value;
-  if (field === "flavor") {
-    value = await ctx.ui.dialog.select({ title: "API type", options: FLAVOR_OPTIONS });
-  } else if (field === "displayStyle") {
-    value = await ctx.ui.dialog.select({ title: "How should models appear in the model list?", options: SIMPLE_OPTIONS });
-  } else if (field === "apiKey") {
-    value = await ctx.ui.dialog.prompt({
-      title: "New API key",
-      description: "Paste the new key. Press Esc to keep the current one. It is saved securely and can be replaced again later."
+  for (; ; ) {
+    const flavorLabel = FLAVORS[provider.flavor]?.label ?? provider.flavor;
+    const styleLabel = provider.displayStyle === "name" ? "Friendly name" : "Model id";
+    const field = await ctx.ui.dialog.select({
+      title: `What do you want to change for ${provider.id}?`,
+      options: [
+        { title: "Base URL", value: "baseURL", description: `Currently: ${provider.baseURL}` },
+        { title: "API type", value: "flavor", description: `Currently: ${flavorLabel}` },
+        { title: "How models are listed", value: "displayStyle", description: `Currently: ${styleLabel}` },
+        { title: "API key", value: "apiKey", description: "Replace the saved key" },
+        { title: "A model's settings", value: "model", description: "Change thinking, image input, or token limits" },
+        { title: "Delete models", value: "deleteModels", description: "Remove several models from this provider at once" },
+        { title: "Rename provider", value: "rename", description: `Currently: ${provider.id}` }
+      ]
     });
-  } else {
-    value = await ctx.ui.dialog.prompt({
-      title: "New Base URL",
-      description: "Must start with https:// (or http:// for a local server) and usually ends in /v1",
-      value: provider.baseURL
+    if (!field) {
+      cancelled(ctx);
+      return;
+    }
+    if (field === "model") {
+      await wizardEditModels(ctx, provider.id);
+      continue;
+    }
+    if (field === "deleteModels") {
+      await wizardDeleteModels(ctx, provider.id);
+      continue;
+    }
+    if (field === "rename") {
+      await wizardRename(ctx, provider);
+      continue;
+    }
+    let value;
+    if (field === "flavor") {
+      value = await ctx.ui.dialog.select({ title: "API type", options: FLAVOR_OPTIONS });
+    } else if (field === "displayStyle") {
+      value = await ctx.ui.dialog.select({ title: "How should models appear in the model list?", options: SIMPLE_OPTIONS });
+    } else if (field === "apiKey") {
+      value = await ctx.ui.dialog.prompt({
+        title: "New API key",
+        description: "Paste the new key. Press Esc to keep the current one. Leave it empty and the current key is kept. It is saved securely and can be replaced again later."
+      });
+    } else {
+      value = await ctx.ui.dialog.prompt({
+        title: "New Base URL",
+        description: "Must start with https:// (or http:// for a local server) and usually ends in /v1",
+        value: provider.baseURL
+      });
+    }
+    if (value === void 0 || value === "") continue;
+    const { message } = await call(ctx, "edit", {
+      providerId: provider.id,
+      [field]: value
     });
+    await ctx.ui.dialog.alert({ title: `Edit ${provider.id}`, message });
   }
-  if (value === void 0 || value === "") {
-    cancelled(ctx);
+}
+async function wizardDeleteModels(ctx, providerId) {
+  for (; ; ) {
+    const raw = await ctx.ui.dialog.prompt({
+      title: `Delete models from ${providerId}`,
+      description: "Type one or more model ids separated by commas. Every id has to exist or nothing is deleted. Run /list-models to see the ids.",
+      placeholder: "model-a, model-b"
+    });
+    if (raw === void 0 || raw.trim() === "") return;
+    const ids = raw.split(",").map((modelId) => modelId.trim()).filter((modelId) => modelId.length > 0);
+    if (ids.length === 0) {
+      ctx.ui.toast.show({ message: "Type at least one model id, separated by commas.", variant: "warning" });
+      continue;
+    }
+    const confirmed = await ctx.ui.dialog.confirm({
+      title: "Delete these models?",
+      message: `Delete ${ids.length} model${ids.length === 1 ? "" : "s"} from '${providerId}'?
+
+${ids.join(", ")}
+
+This cannot be undone. The provider keeps its other models, its address and its key.`,
+      label: { confirm: "Delete them", cancel: "Keep them" }
+    });
+    if (!confirmed) return;
+    const { status, message } = await call(ctx, "deleteModels", { providerId, modelIds: raw });
+    if (status === "ok") {
+      done(ctx, message);
+      return;
+    }
+    if (status === "unknown_provider") {
+      fail(ctx, message);
+      return;
+    }
+    await ctx.ui.dialog.alert({ title: `Delete models from ${providerId}`, message });
+  }
+}
+async function wizardRename(ctx, provider) {
+  const raw = await ctx.ui.dialog.prompt({
+    title: `Rename ${provider.id}`,
+    description: "A new short name for this provider. Letters, numbers, hyphens and underscores only. Its models, address and key stay as they are.",
+    placeholder: "my-proxy"
+  });
+  if (raw === void 0 || raw.trim() === "") return;
+  const newId = raw.trim();
+  if (!ID_PATTERN.test(newId)) {
+    fail(ctx, `'${newId}' cannot be used as a name. Use only letters, numbers, hyphens and underscores: for example my-proxy.`);
     return;
   }
-  const { message } = await call(ctx, "edit", {
-    providerId: provider.id,
-    [field]: value
+  if (newId === provider.id) {
+    fail(ctx, `'${newId}' is already the name of this provider. Pick a different name.`);
+    return;
+  }
+  const confirmed = await ctx.ui.dialog.confirm({
+    title: "Rename this provider?",
+    message: `Rename '${provider.id}' to '${newId}'?
+
+Its models, address and key are kept. An API key saved under '${provider.id}' stays stored under that name.`,
+    label: { confirm: "Rename it", cancel: "Keep the current name" }
   });
-  await ctx.ui.dialog.alert({ title: `Edit ${provider.id}`, message });
+  if (!confirmed) return;
+  const { status, message } = await call(ctx, "renameProvider", { providerId: provider.id, newId });
+  if (status === "ok") {
+    provider.id = newId;
+    done(ctx, message);
+    return;
+  }
+  fail(ctx, message);
 }
 async function wizardDelete(ctx) {
   const provider = await pickProvider(ctx);
@@ -1627,9 +1703,11 @@ function probedToEnriched(probed, displayStyle) {
   if (hasEvidence(probed.maxOutputSource)) limit.output = probed.maxOutput;
   const model = {
     name: displayStyle === "slug" ? probed.id : probed.name ?? probed.id,
-    limit,
-    modalities: probed.image ? { input: ["text", "image"], output: ["text"] } : { input: ["text"], output: ["text"] }
+    limit
   };
+  if (hasEvidence(probed.imageSource)) {
+    model.modalities = probed.image ? { input: ["text", "image"], output: ["text"] } : { input: ["text"], output: ["text"] };
+  }
   if (probed.reasoning) model.reasoning = true;
   if (probed.reasoningLevels?.length) model.reasoningLevels = [...probed.reasoningLevels];
   if (probed.cost) {
@@ -1644,6 +1722,9 @@ function probedToEnriched(probed, displayStyle) {
 }
 function hasEvidence(source) {
   return source !== void 0 && source !== "default" && source !== "api-fallback";
+}
+function isAuthoritative(source) {
+  return source === "detected" || source === "models.dev";
 }
 function describeProbed(probed) {
   const lines = [`Model: ${probed.id}`];
@@ -1766,12 +1847,23 @@ function shouldDiscover(provider) {
 function hasImage(model) {
   return model.modalities?.input.includes("image") ?? false;
 }
-function describeUpdate(id3, current, fresh) {
+function sourcesOf(probed) {
+  return {
+    contextSource: probed.contextSource,
+    maxOutputSource: probed.maxOutputSource,
+    costSource: probed.costSource,
+    imageSource: probed.imageSource
+  };
+}
+function freshWins(sources, source) {
+  return sources === void 0 || isAuthoritative(source);
+}
+function describeUpdate(id3, current, fresh, sources) {
   const parts = [];
-  if (current.limit.context !== fresh.limit.context) {
+  if (fresh.limit.context !== void 0 && (current.limit.context === void 0 || freshWins(sources, sources?.contextSource)) && current.limit.context !== fresh.limit.context) {
     parts.push(`context ${current.limit.context} -> ${fresh.limit.context}`);
   }
-  if (current.limit.output !== fresh.limit.output) {
+  if (fresh.limit.output !== void 0 && (current.limit.output === void 0 || freshWins(sources, sources?.maxOutputSource)) && current.limit.output !== fresh.limit.output) {
     parts.push(`max-out ${current.limit.output} -> ${fresh.limit.output}`);
   }
   if (current.name !== fresh.name) {
@@ -1780,17 +1872,26 @@ function describeUpdate(id3, current, fresh) {
   if (!!current.reasoning !== !!fresh.reasoning) {
     parts.push(fresh.reasoning ? "reasoning [+]" : "reasoning [-]");
   }
-  if (hasImage(current) !== hasImage(fresh)) {
+  if (fresh.modalities !== void 0 && (current.modalities === void 0 || freshWins(sources, sources?.imageSource)) && hasImage(current) !== hasImage(fresh)) {
     parts.push(hasImage(fresh) ? "image [+]" : "image [-]");
   }
   if (parts.length === 0) return null;
   return `${id3}: ${parts.join(", ")}`;
 }
-function mergeAppliedModel(stored, fresh) {
+function mergeAppliedModel(stored, fresh, sources) {
+  const limit = { ...stored.limit };
+  if (fresh.limit.context !== void 0 && (stored.limit.context === void 0 || freshWins(sources, sources?.contextSource))) {
+    limit.context = fresh.limit.context;
+  }
+  if (fresh.limit.input !== void 0) limit.input = fresh.limit.input;
+  if (fresh.limit.output !== void 0 && (stored.limit.output === void 0 || freshWins(sources, sources?.maxOutputSource))) {
+    limit.output = fresh.limit.output;
+  }
+  const modalities = fresh.modalities !== void 0 && (stored.modalities === void 0 || freshWins(sources, sources?.imageSource)) ? fresh.modalities : stored.modalities;
   const merged = {
     name: fresh.name,
-    limit: { ...stored.limit, ...fresh.limit },
-    modalities: fresh.modalities ?? stored.modalities
+    limit,
+    modalities
   };
   if (stored.family !== void 0) merged.family = stored.family;
   if (stored.release_date !== void 0) merged.release_date = stored.release_date;
@@ -1799,7 +1900,7 @@ function mergeAppliedModel(stored, fresh) {
   if (stored.temperature !== void 0) merged.temperature = stored.temperature;
   if (stored.tool_call !== void 0) merged.tool_call = stored.tool_call;
   if (fresh.reasoning) merged.reasoning = true;
-  if (fresh.cost) {
+  if (fresh.cost && (stored.cost === void 0 || freshWins(sources, sources?.costSource))) {
     merged.cost = { ...fresh.cost };
   } else if (stored.cost) {
     merged.cost = { ...stored.cost };
@@ -1822,7 +1923,7 @@ function diffModels(current, fresh, displayStyle) {
       changes.push({ id: p.id, kind: "added", detail: `${p.id}: new model`, searchText: `${p.id} added` });
       continue;
     }
-    const detail = describeUpdate(p.id, stored, probedToEnriched(p, displayStyle));
+    const detail = describeUpdate(p.id, stored, probedToEnriched(p, displayStyle), sourcesOf(p));
     if (detail) changes.push({ id: p.id, kind: "updated", detail, searchText: `${p.id} updated` });
   }
   for (const id3 of Object.keys(current)) {
@@ -1840,7 +1941,7 @@ function applyDecisions(current, fresh, decisions, displayStyle) {
     if (!current[p.id]) {
       if (decision === "apply") next[p.id] = probedToEnriched(p, displayStyle);
     } else if (decision === "apply") {
-      next[p.id] = mergeAppliedModel(current[p.id], probedToEnriched(p, displayStyle));
+      next[p.id] = mergeAppliedModel(current[p.id], probedToEnriched(p, displayStyle), sourcesOf(p));
     } else if (decision === "remove") {
       delete next[p.id];
     }

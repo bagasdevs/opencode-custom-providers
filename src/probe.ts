@@ -395,9 +395,13 @@ export function probedToEnriched(
   const model: EnrichedModel = {
     name: displayStyle === "slug" ? probed.id : probed.name ?? probed.id,
     limit,
-    modalities: probed.image
+  }
+  // With no image evidence the false is the default, not a measurement, so the
+  // key is omitted and a stored input list survives the re-probe unchanged.
+  if (hasEvidence(probed.imageSource)) {
+    model.modalities = probed.image
       ? { input: ["text", "image"], output: ["text"] }
-      : { input: ["text"], output: ["text"] },
+      : { input: ["text"], output: ["text"] }
   }
   if (probed.reasoning) model.reasoning = true
   if (probed.reasoningLevels?.length) model.reasoningLevels = [...probed.reasoningLevels]
@@ -416,6 +420,13 @@ export function probedToEnriched(
  * which is also not a measurement of this model - both are unevidenced. */
 function hasEvidence(source: MetadataSource | undefined): boolean {
   return source !== undefined && source !== "default" && source !== "api-fallback"
+}
+
+/** Only a gateway measurement or a catalog lookup may overwrite stored data.
+ * A local rule is a pattern match about the model in general, not about this
+ * endpoint, so it can refine what is displayed but never clobbers storage. */
+export function isAuthoritative(source: MetadataSource | undefined): boolean {
+  return source === "detected" || source === "models.dev"
 }
 
 export function describeProbed(probed: ProbedModel): string {

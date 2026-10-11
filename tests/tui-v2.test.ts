@@ -404,13 +404,15 @@ describe("v2 model field editing", () => {
     const state = makeContext(
       [{ models: [], status: "unknown_provider", message: "There is no provider named 'my-proxy'." }],
       [],
-      ["my-proxy", "model"],
+      ["my-proxy", "model", undefined],
       [provider],
     )
 
     await runEditModels(state)
 
-    expect(state.toasts.at(-1)?.message).toBe("There is no provider named 'my-proxy'.")
+    // The wizard returns to its menu after the failure, so the flow's own toast is no
+    // longer the last one: the menu Esc that ends the wizard follows it.
+    expect(state.toasts.some(toast => toast.message === "There is no provider named 'my-proxy'.")).toBe(true)
     expect(state.calls.some(call => call.method === "editModel")).toBe(false)
   })
 
@@ -418,13 +420,13 @@ describe("v2 model field editing", () => {
     const state = makeContext(
       [{ models: [], status: "ok", message: "" }],
       [],
-      ["my-proxy", "model"],
+      ["my-proxy", "model", undefined],
       [provider],
     )
 
     await runEditModels(state)
 
-    expect(state.toasts.at(-1)?.message).toContain("has no models yet")
+    expect(state.toasts.some(toast => toast.message.includes("has no models yet"))).toBe(true)
     expect(state.calls.some(call => call.method === "editModel")).toBe(false)
   })
 })

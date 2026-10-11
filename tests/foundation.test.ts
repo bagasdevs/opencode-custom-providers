@@ -260,7 +260,7 @@ describe("mergeAppliedModel (apply must not drop stored-only fields)", () => {
   it("applyDecisions merges instead of replacing an existing entry", () => {
     const next = applyDecisions(
       { m1: stored },
-      [{ id: "m1", context: 2_000, maxOutput: 200, image: true, contextSource: "detected", maxOutputSource: "detected" }],
+      [{ id: "m1", context: 2_000, maxOutput: 200, image: true, imageSource: "detected", contextSource: "detected", maxOutputSource: "detected" }],
       {},
       "slug",
     )

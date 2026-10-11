@@ -988,9 +988,11 @@ function probedToEnriched(probed, displayStyle) {
   if (hasEvidence(probed.maxOutputSource)) limit.output = probed.maxOutput;
   const model = {
     name: displayStyle === "slug" ? probed.id : probed.name ?? probed.id,
-    limit,
-    modalities: probed.image ? { input: ["text", "image"], output: ["text"] } : { input: ["text"], output: ["text"] }
+    limit
   };
+  if (hasEvidence(probed.imageSource)) {
+    model.modalities = probed.image ? { input: ["text", "image"], output: ["text"] } : { input: ["text"], output: ["text"] };
+  }
   if (probed.reasoning) model.reasoning = true;
   if (probed.reasoningLevels?.length) model.reasoningLevels = [...probed.reasoningLevels];
   if (probed.cost) {
@@ -1005,6 +1007,9 @@ function probedToEnriched(probed, displayStyle) {
 }
 function hasEvidence(source) {
   return source !== void 0 && source !== "default" && source !== "api-fallback";
+}
+function isAuthoritative(source) {
+  return source === "detected" || source === "models.dev";
 }
 function describeProbed(probed) {
   const lines = [`Model: ${probed.id}`];
@@ -1127,12 +1132,23 @@ function shouldDiscover(provider) {
 function hasImage(model) {
   return model.modalities?.input.includes("image") ?? false;
 }
-function describeUpdate(id2, current, fresh) {
+function sourcesOf(probed) {
+  return {
+    contextSource: probed.contextSource,
+    maxOutputSource: probed.maxOutputSource,
+    costSource: probed.costSource,
+    imageSource: probed.imageSource
+  };
+}
+function freshWins(sources, source) {
+  return sources === void 0 || isAuthoritative(source);
+}
+function describeUpdate(id2, current, fresh, sources) {
   const parts = [];
-  if (current.limit.context !== fresh.limit.context) {
+  if (fresh.limit.context !== void 0 && (current.limit.context === void 0 || freshWins(sources, sources?.contextSource)) && current.limit.context !== fresh.limit.context) {
     parts.push(`context ${current.limit.context} -> ${fresh.limit.context}`);
   }
-  if (current.limit.output !== fresh.limit.output) {
+  if (fresh.limit.output !== void 0 && (current.limit.output === void 0 || freshWins(sources, sources?.maxOutputSource)) && current.limit.output !== fresh.limit.output) {
     parts.push(`max-out ${current.limit.output} -> ${fresh.limit.output}`);
   }
   if (current.name !== fresh.name) {
@@ -1141,17 +1157,26 @@ function describeUpdate(id2, current, fresh) {
   if (!!current.reasoning !== !!fresh.reasoning) {
     parts.push(fresh.reasoning ? "reasoning [+]" : "reasoning [-]");
   }
-  if (hasImage(current) !== hasImage(fresh)) {
+  if (fresh.modalities !== void 0 && (current.modalities === void 0 || freshWins(sources, sources?.imageSource)) && hasImage(current) !== hasImage(fresh)) {
     parts.push(hasImage(fresh) ? "image [+]" : "image [-]");
   }
   if (parts.length === 0) return null;
   return `${id2}: ${parts.join(", ")}`;
 }
-function mergeAppliedModel(stored, fresh) {
+function mergeAppliedModel(stored, fresh, sources) {
+  const limit = { ...stored.limit };
+  if (fresh.limit.context !== void 0 && (stored.limit.context === void 0 || freshWins(sources, sources?.contextSource))) {
+    limit.context = fresh.limit.context;
+  }
+  if (fresh.limit.input !== void 0) limit.input = fresh.limit.input;
+  if (fresh.limit.output !== void 0 && (stored.limit.output === void 0 || freshWins(sources, sources?.maxOutputSource))) {
+    limit.output = fresh.limit.output;
+  }
+  const modalities = fresh.modalities !== void 0 && (stored.modalities === void 0 || freshWins(sources, sources?.imageSource)) ? fresh.modalities : stored.modalities;
   const merged = {
     name: fresh.name,
-    limit: { ...stored.limit, ...fresh.limit },
-    modalities: fresh.modalities ?? stored.modalities
+    limit,
+    modalities
   };
   if (stored.family !== void 0) merged.family = stored.family;
   if (stored.release_date !== void 0) merged.release_date = stored.release_date;
@@ -1160,7 +1185,7 @@ function mergeAppliedModel(stored, fresh) {
   if (stored.temperature !== void 0) merged.temperature = stored.temperature;
   if (stored.tool_call !== void 0) merged.tool_call = stored.tool_call;
   if (fresh.reasoning) merged.reasoning = true;
-  if (fresh.cost) {
+  if (fresh.cost && (stored.cost === void 0 || freshWins(sources, sources?.costSource))) {
     merged.cost = { ...fresh.cost };
   } else if (stored.cost) {
     merged.cost = { ...stored.cost };
@@ -1183,7 +1208,7 @@ function diffModels(current, fresh, displayStyle) {
       changes.push({ id: p.id, kind: "added", detail: `${p.id}: new model`, searchText: `${p.id} added` });
       continue;
     }
-    const detail = describeUpdate(p.id, stored, probedToEnriched(p, displayStyle));
+    const detail = describeUpdate(p.id, stored, probedToEnriched(p, displayStyle), sourcesOf(p));
     if (detail) changes.push({ id: p.id, kind: "updated", detail, searchText: `${p.id} updated` });
   }
   for (const id2 of Object.keys(current)) {
@@ -1201,7 +1226,7 @@ function applyDecisions(current, fresh, decisions, displayStyle) {
     if (!current[p.id]) {
       if (decision === "apply") next[p.id] = probedToEnriched(p, displayStyle);
     } else if (decision === "apply") {
-      next[p.id] = mergeAppliedModel(current[p.id], probedToEnriched(p, displayStyle));
+      next[p.id] = mergeAppliedModel(current[p.id], probedToEnriched(p, displayStyle), sourcesOf(p));
     } else if (decision === "remove") {
       delete next[p.id];
     }
@@ -1522,13 +1547,35 @@ function probedToDraft(probed, displayStyle = "slug") {
   return draft;
 }
 var EDITOR_OWNED = ["capabilities", "limit", "reasoning", "thinkingLevelMap", "variants", "edited"];
+var GATED = /* @__PURE__ */ new Set(["capabilities", "limit", "cost", "variants"]);
 function probedToDraftKeepingEdits(existing, probed, displayStyle = "slug") {
   const fresh = probedToDraft(probed, displayStyle);
-  if (!existing || existing.edited !== true) return fresh;
+  if (!existing) return fresh;
   const kept = { ...fresh };
   const source = existing;
-  for (const key of EDITOR_OWNED) {
-    if (source[key] !== void 0) kept[key] = source[key];
+  if (existing.edited === true) {
+    for (const key of EDITOR_OWNED) {
+      if (source[key] !== void 0) kept[key] = source[key];
+    }
+    return kept;
+  }
+  for (const key of GATED) {
+    if (source[key] === void 0) continue;
+    if (key === "limit") {
+      const merged = { ...source.limit };
+      if (fresh.limit?.context !== void 0 && isAuthoritative(probed.contextSource)) {
+        merged.context = fresh.limit.context;
+      }
+      if (fresh.limit?.output !== void 0 && isAuthoritative(probed.maxOutputSource)) {
+        merged.output = fresh.limit.output;
+      }
+      if (fresh.limit?.input !== void 0) merged.input = fresh.limit.input;
+      kept.limit = merged;
+      continue;
+    }
+    const freshValue = fresh[key];
+    const measured = key === "capabilities" ? isAuthoritative(probed.imageSource) : key === "variants" ? probed.reasoningLevels !== void 0 : isAuthoritative(probed.costSource);
+    kept[key] = freshValue !== void 0 && measured ? freshValue : source[key];
   }
   return kept;
 }
@@ -1822,21 +1869,17 @@ var setup = async (ctx) => {
     if (!removed.delete(providerId)) return;
     await ctx.storage.set(REMOVED_KEY, [...removed]);
   };
-  const persist = async () => {
+  const recordFor = (providerId, entry) => ({
+    baseURL: entry.baseURL,
+    flavor: entry.flavor,
+    displayStyle: entry.displayStyle,
+    models: Object.fromEntries(discovered.get(providerId) ?? /* @__PURE__ */ new Map())
+  });
+  const persist = async (override) => {
     if (!loaded) throw new Error("The saved provider list could not be read, so nothing was written. Restart opencode and try again.");
     await ctx.storage.set(
       STORAGE_KEY,
-      Object.fromEntries(
-        [...managed].map(([providerId, entry]) => [
-          providerId,
-          {
-            baseURL: entry.baseURL,
-            flavor: entry.flavor,
-            displayStyle: entry.displayStyle,
-            models: Object.fromEntries(discovered.get(providerId) ?? /* @__PURE__ */ new Map())
-          }
-        ])
-      )
+      override ?? Object.fromEntries([...managed].map(([providerId, entry]) => [providerId, recordFor(providerId, entry)]))
     );
   };
   await ctx.provider.transform((providers) => {
@@ -2540,6 +2583,128 @@ Technical detail: ${sanitizeErrorMessage(error)}`);
         }
       }
       return { message: lines.join("\n") };
+    },
+    deleteModels: async (input) => {
+      const models = discovered.get(input.providerId);
+      if (!models) {
+        return {
+          status: "unknown_provider",
+          message: `There is no provider named '${input.providerId}'. Run /list-custom-providers to see your providers.`,
+          deleted: 0
+        };
+      }
+      const wanted = parseModelIds(input.modelIds) ?? [];
+      if (wanted.length === 0) {
+        return { status: "invalid", message: "Type one or more model ids separated by commas.", deleted: 0 };
+      }
+      const unknown = wanted.filter((modelId) => !models.has(modelId));
+      if (unknown.length > 0) {
+        return {
+          status: "unknown_model",
+          message: `Provider '${input.providerId}' has no model named '${unknown.join("', '")}'. Nothing was deleted.`,
+          deleted: 0
+        };
+      }
+      for (const modelId of wanted) models.delete(modelId);
+      await persist();
+      await ctx.provider.transform((providers) => {
+        for (const modelId of wanted) {
+          if (!discovered.get(input.providerId)?.has(modelId)) providers.models.remove(input.providerId, modelId);
+        }
+      });
+      await reloadQuietly();
+      return {
+        status: "ok",
+        message: `Removed ${wanted.length} model${wanted.length === 1 ? "" : "s"} from '${input.providerId}': ${wanted.join(", ")}.`,
+        deleted: wanted.length
+      };
+    },
+    renameProvider: async (input) => {
+      const entry = managed.get(input.providerId);
+      if (!entry) {
+        return candidates.has(input.providerId) ? {
+          status: "invalid",
+          message: `'${input.providerId}' comes from your opencode config, not from this plugin, so it cannot be renamed here.
+Remove its entry from your opencode config to change its name.`
+        } : {
+          status: "unknown_provider",
+          message: `There is no provider named '${input.providerId}'. Run /list-custom-providers to see your providers.`
+        };
+      }
+      const clean = input.newId.trim();
+      if (!validId(clean)) {
+        return { status: "invalid", message: "The provider name may only contain letters, numbers, hyphens and underscores. Example: my-proxy" };
+      }
+      if (clean === input.providerId) {
+        return { status: "invalid", message: `'${clean}' is already the name of this provider. Pick a different name.` };
+      }
+      const clash = collisionSuggestion(clean);
+      if (clash) {
+        return { status: "invalid", message: `'${clean}' is the name of a provider opencode already has, so renaming to it would change that provider. Use '${clash}' instead.` };
+      }
+      if (managed.has(clean) || candidates.has(clean)) {
+        return {
+          status: "invalid",
+          message: `'${clean}' is already one of your providers, so renaming would merge the two.
+Pick a different name, or remove '${clean}' with /delete-provider first.`
+        };
+      }
+      removed.delete(clean);
+      const renamed = /* @__PURE__ */ new Map();
+      for (const [providerId, value] of managed) renamed.set(providerId === input.providerId ? clean : providerId, value);
+      managed.clear();
+      for (const [providerId, value] of renamed) managed.set(providerId, value);
+      const discoveredModels = discovered.get(input.providerId);
+      const previousModelIds = [...discoveredModels?.keys() ?? []];
+      discovered.delete(input.providerId);
+      if (discoveredModels) discovered.set(clean, discoveredModels);
+      const probed = lastProbeModels.get(input.providerId);
+      if (probed) {
+        lastProbeModels.set(clean, probed);
+        lastProbeModels.delete(input.providerId);
+      }
+      const probedCount = lastProbe.get(input.providerId);
+      if (probedCount !== void 0) {
+        lastProbe.set(clean, probedCount);
+        lastProbe.delete(input.providerId);
+      }
+      const record = {};
+      for (const [providerId, value] of managed) {
+        Object.defineProperty(record, providerId, { value: recordFor(providerId, value), enumerable: true, writable: true, configurable: true });
+      }
+      await persist(record);
+      removed.add(input.providerId);
+      await ctx.storage.set(REMOVED_KEY, [...removed]);
+      await registerIntegration(clean);
+      await ctx.provider.transform((providers) => {
+        if (!managed.has(input.providerId) && !discovered.has(input.providerId)) {
+          providers.update(input.providerId, (provider) => {
+            provider.settings = { ...provider.settings ?? {}, dynamic: false };
+          });
+          for (const modelId of previousModelIds) providers.models.remove(input.providerId, modelId);
+        }
+        const current = managed.get(clean);
+        if (current) {
+          providers.update(clean, (provider) => {
+            provider.activation = "enabled";
+            if (!provider.package) provider.package = OPENAI_COMPATIBLE;
+            provider.settings = { ...provider.settings ?? {}, baseURL: current.baseURL };
+            provider.integrationID = void 0;
+          });
+        }
+        for (const [modelId, draft] of discovered.get(clean) ?? /* @__PURE__ */ new Map()) {
+          providers.models.update(clean, modelId, (model) => {
+            mergeDiscoveredIntoStored(model, draft);
+            model[DISCOVERED] = true;
+          });
+        }
+      });
+      await reloadQuietly();
+      return {
+        status: "ok",
+        message: `Done. '${input.providerId}' is now called '${clean}'. Its models and settings are unchanged.
+An API key saved for '${input.providerId}' stays stored under that name, so if sign-in fails afterwards, add the key again with /edit-provider.`
+      };
     }
   };
   await ctx.rpc.register(
@@ -2690,6 +2855,47 @@ Technical detail: ${sanitizeErrorMessage(error)}`);
           },
           output: MESSAGE_OUTPUT
         },
+        deleteModels: {
+          input: {
+            type: "object",
+            properties: {
+              providerId: { type: "string", description: "Which provider to delete models from" },
+              modelIds: { type: "string", description: "Comma-separated model ids; every id must exist or nothing is deleted" }
+            },
+            required: ["providerId", "modelIds"],
+            additionalProperties: false
+          },
+          output: {
+            type: "object",
+            properties: {
+              status: { type: "string", enum: ["ok", "unknown_provider", "unknown_model", "invalid"] },
+              message: { type: "string" },
+              deleted: { type: "number" }
+            },
+            required: ["status", "message", "deleted"],
+            additionalProperties: false
+          }
+        },
+        renameProvider: {
+          input: {
+            type: "object",
+            properties: {
+              providerId: { type: "string", description: "Current provider ID" },
+              newId: { type: "string", description: "New provider ID (letters, numbers, hyphens and underscores only)" }
+            },
+            required: ["providerId", "newId"],
+            additionalProperties: false
+          },
+          output: {
+            type: "object",
+            properties: {
+              status: { type: "string", enum: ["ok", "invalid", "unknown_provider"] },
+              message: { type: "string" }
+            },
+            required: ["status", "message"],
+            additionalProperties: false
+          }
+        },
         reprobe: {
           input: {
             type: "object",
@@ -2783,6 +2989,8 @@ Technical detail: ${sanitizeErrorMessage(error)}`);
       listModels: (input) => ops.listModels(input),
       editModel: (input) => ops.editModel(input),
       remove: (input) => ops.remove(input.providerId),
+      deleteModels: (input) => ops.deleteModels(input),
+      renameProvider: (input) => ops.renameProvider(input),
       reprobe: (input) => ops.reprobe(input.providerId),
       apply: (input) => ops.apply(input),
       refresh: () => ops.refresh(),
@@ -2916,6 +3124,38 @@ Technical detail: ${sanitizeErrorMessage(error)}`);
         additionalProperties: false
       },
       execute: async (raw2) => ({ content: (await ops.catalogAdd(raw2)).message })
+    });
+    tools.add({
+      name: "delete-models",
+      description: "Delete models from a provider by id (comma-separated). All ids must exist or nothing is deleted; the provider keeps its address, key and remaining models.",
+      input: {
+        type: "object",
+        properties: {
+          providerId: { type: "string", description: "Which provider to update" },
+          modelIds: { type: "string", description: "Comma-separated model ids to delete" }
+        },
+        required: ["providerId", "modelIds"],
+        additionalProperties: false
+      },
+      execute: async (raw2) => ({
+        content: (await ops.deleteModels(raw2)).message
+      })
+    });
+    tools.add({
+      name: "rename-provider",
+      description: "Rename one of your custom providers. Keeps its position, models and settings; an API key saved under the old name is not moved.",
+      input: {
+        type: "object",
+        properties: {
+          providerId: { type: "string", description: "Which provider to rename" },
+          newId: { type: "string", description: "New provider ID (letters, numbers, hyphens and underscores only)" }
+        },
+        required: ["providerId", "newId"],
+        additionalProperties: false
+      },
+      execute: async (raw2) => ({
+        content: (await ops.renameProvider(raw2)).message
+      })
     });
     tools.add({
       name: "delete-provider",
