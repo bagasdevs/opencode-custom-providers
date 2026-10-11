@@ -73,6 +73,7 @@ function makeContext() {
       update({ id: integrationID, name: integrationID }),
     method: { update: () => undefined },
   }
+  const definitions: Record<string, { input?: unknown; output?: unknown }> = {}
   const context: V2Context = {
     provider: {
       // The host replays transforms on every reload, and reprobe resolves candidates
@@ -112,12 +113,18 @@ function makeContext() {
       },
     },
     rpc: {
-      register: async (_definition, registered) => {
+      register: async (definition, registered) => {
         Object.assign(handlers, registered)
+        // Keep the schemas: the live host validates every result against the output
+        // schema, so a status the schema omits fails at runtime with HTTP 500 even
+        // though the handler returns it. Dropping the definition here is why that
+        // class of bug reached the host once already. The definition is
+        // { id, methods: { <method>: { input, output } } }.
+        Object.assign(definitions, (definition as { methods?: Record<string, unknown> })?.methods ?? {})
       },
     },
   }
-  return { context, handlers, keys, stored, records }
+  return { context, handlers, keys, stored, records, definitions }
 }
 
 async function registeredHandlers() {
@@ -221,6 +228,68 @@ describe("v2 manualAdd", () => {
     expect(stored).toHaveLength(1)
     expect(keys).toEqual([{ integrationID: "manual-provider", key: "test-key" }])
     expect(requests.every(url => !url.startsWith("https://provider.example"))).toBe(true)
+  })
+
+  it("asks before replacing an existing provider instead of failing", async () => {
+    // Found by an end-to-end run against the live host: the RPC output schema listed only
+    // "ok" and "invalid", so the confirm_replace branch failed output validation and
+    // answered HTTP 500. Adding a model to a provider that already exists is the one case
+    // a caller must handle, so the schema has to allow it.
+    vi.stubGlobal("fetch", async () => new Response("{}", { status: 200 }))
+    const { handlers, stored } = await registeredHandlers()
+    const manualAdd = handlers["manualAdd"]
+    if (!manualAdd) throw new Error("manualAdd RPC was not registered")
+
+    const first = await manualAdd({
+      providerId: "manual-provider",
+      baseURL: "https://provider.example/v1",
+      modelIds: "gpt-4o",
+    })
+    expect(first).toMatchObject({ status: "ok" })
+
+    const again = await manualAdd({
+      providerId: "manual-provider",
+      baseURL: "https://provider.example/v1",
+      modelIds: "gpt-4o-mini",
+    })
+    expect(again).toMatchObject({ status: "confirm_replace" })
+    expect(stored).toHaveLength(1)
+
+    const confirmed = await manualAdd({
+      providerId: "manual-provider",
+      baseURL: "https://provider.example/v1",
+      modelIds: "gpt-4o-mini",
+      confirmReplace: true,
+    })
+    expect(confirmed).toMatchObject({ status: "ok" })
+  })
+
+  it("declares every status the handler can return in its output schema", async () => {
+    // The live host validates each result against the registered output schema and
+    // answers HTTP 500 when a status is missing from it. The handler returning the
+    // status is not enough: the schema has to allow it.
+    vi.stubGlobal("fetch", async () => new Response("{}", { status: 200 }))
+    const { handlers, definitions } = await registeredHandlers()
+    const manualAdd = handlers["manualAdd"]
+    if (!manualAdd) throw new Error("manualAdd RPC was not registered")
+
+    const schema = definitions["manualAdd"]?.output as
+      | { properties?: { status?: { enum?: string[] } } }
+      | undefined
+    const allowed = schema?.properties?.status?.enum ?? []
+    expect(allowed).toContain("ok")
+    expect(allowed).toContain("invalid")
+    expect(allowed).toContain("confirm_replace")
+
+    // Every status the handler actually produces must be allowed by the schema.
+    const first = await manualAdd({ providerId: "p", baseURL: "https://provider.example/v1", modelIds: "m" })
+    const clash = await manualAdd({ providerId: "p", baseURL: "https://provider.example/v1", modelIds: "m2" })
+    const bad = await manualAdd({ providerId: "p", baseURL: "https://provider.example/v1", modelIds: " " })
+    for (const result of [first, clash, bad]) {
+      expect(allowed, `schema must allow status '${String((result as { status?: string }).status)}'`).toContain(
+        (result as { status?: string }).status,
+      )
+    }
   })
 })
 

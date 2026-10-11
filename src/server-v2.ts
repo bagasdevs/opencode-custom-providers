@@ -196,7 +196,11 @@ const ADD_OUTPUT = {
 const MANUAL_ADD_OUTPUT = {
   type: "object",
   properties: {
-    status: { type: "string", enum: ["ok", "invalid"] },
+    // confirm_replace is a real outcome: adding to a provider that already exists asks
+    // first. Leaving it out of the enum made that path fail the output validation and
+    // answer HTTP 500 instead of asking, so the one case a caller has to handle was
+    // the one case the schema forbade.
+    status: { type: "string", enum: ["ok", "invalid", "confirm_replace"] },
     message: { type: "string" },
   },
   required: ["status", "message"],
