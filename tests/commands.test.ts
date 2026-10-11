@@ -133,7 +133,7 @@ describe("rotateProviderApiKey (server edit-provider key rotation)", () => {
 
 describe("renameProviderEntry", () => {
   it("preserves the position of the renamed entry in the key order", () => {
-    const providers = {
+    const providers: Record<string, ProviderConfig> = {
       alpha: makeEntry(),
       beta: makeEntry(),
       gamma: makeEntry(),
@@ -170,7 +170,7 @@ describe("renameProviderEntry", () => {
   })
 
   it("preserves position when the renamed entry is not first", () => {
-    const providers = {
+    const providers: Record<string, ProviderConfig> = {
       alpha: makeEntry(),
       beta: makeEntry(),
       gamma: makeEntry(),

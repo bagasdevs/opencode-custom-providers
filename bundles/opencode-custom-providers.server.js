@@ -3034,7 +3034,7 @@ An API key saved for '${input.providerId}' stays stored under that name, so if s
     });
     tools.add({
       name: "add-provider",
-      description: "Add a new OpenAI-compatible provider with dynamic model discovery. Validates the endpoint, discovers its models, enriches them with models.dev metadata, and activates the provider.",
+      description: "Add a provider with dynamic model discovery. Validates the endpoint, discovers its models, enriches them with models.dev metadata, and activates the provider. Defaults to an OpenAI-compatible API; pass flavor for anthropic, gemini or ollama.",
       input: {
         type: "object",
         properties: {
@@ -3159,7 +3159,7 @@ An API key saved for '${input.providerId}' stays stored under that name, so if s
     });
     tools.add({
       name: "delete-provider",
-      description: "Remove a provider and its models from opencode.",
+      description: "Remove a provider and its models from opencode. A credential saved for it in opencode's auth store is not removed; delete that separately if you want it gone.",
       input: {
         type: "object",
         properties: { providerId: { type: "string", description: "Provider ID to delete" } },

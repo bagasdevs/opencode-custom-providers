@@ -68,6 +68,9 @@ parentheses.
 | `/edit-provider` | Change a provider's address, API type, key, or model naming |
 | `/delete-provider` | Remove a provider and its models |
 
+In the v2 edit wizard, Esc inside a field returns to the menu, so several changes can be made
+in one visit. Only Esc at the menu leaves the wizard.
+
 OpenCode 1 has no `/list-custom-providers`, `/add-known-provider` or `/review-model-changes`;
 the catalog and reconcile flows live inside its own wizards instead.
 
@@ -84,8 +87,9 @@ the catalog and reconcile flows live inside its own wizards instead.
 | `apply-reconcile` | `apply-reconcile` | Persist reconcile decisions |
 | `refresh-models` | `refresh-models` | Re-discover models for every provider |
 | `edit-provider` | : | Edit an existing provider |
+| : | `rename-provider` | Rename a provider, keeping its models, address and key |
 | `delete-provider` | `delete-provider` | Remove a provider |
-| `delete-models` | : | Remove individual models |
+| `delete-models` | `delete-models` | Remove individual models (on v2, all of them or nothing) |
 
 ## Configuration
 
@@ -119,7 +123,8 @@ npm run lint                   # eslint
 ## Limits
 
 - Bounded network per dynamic provider at startup (15s timeouts; failures never block)
-- `reasoningLevels` / `supportsDeveloperRole` are recorded but inert (no such opencode fields)
+- `reasoningLevels` is recorded, and a thinking-level edit does reach the model picker (`applyModelFields` writes `variants`, the field the host reads)
+- `supportsDeveloperRole` is recorded but inert (opencode never reads that key)
 - TUI dialogs are single-select, so review is sequential
 
 ## License

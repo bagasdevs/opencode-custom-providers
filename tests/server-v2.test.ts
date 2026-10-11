@@ -7,7 +7,7 @@ vi.mock("node:os", async importOriginal => {
 })
 
 import { clearModelsDevCache } from "../src/catalog.js"
-import { setup, type V2Context } from "../src/server-v2.js"
+import { setup, type V2Context, type ReprobeResult } from "../src/server-v2.js"
 
 type Handler = (input: unknown, context?: unknown) => Promise<unknown>
 
@@ -126,7 +126,7 @@ async function registeredHandlers() {
   return state
 }
 
-let lastTransform: ((providers: Parameters<Parameters<typeof setup>[0]["provider"]["transform"]>[0]) => void | Promise<void>) | undefined
+let lastTransform: Parameters<Parameters<typeof setup>[0]["provider"]["transform"]>[0] | undefined
 
 beforeEach(() => {
   clearModelsDevCache()
@@ -310,7 +310,7 @@ describe("v2 reprobe", () => {
 
   it("omits changes when the provider is unknown", async () => {
     const { handlers } = await registeredHandlers()
-    const result = (await handlers["reprobe"]?.({ providerId: "nope" })) as { changes?: unknown }
+    const result = (await handlers["reprobe"]?.({ providerId: "nope" })) as ReprobeResult
     expect(result.message).toContain("no provider")
     expect(result.changes).toBeUndefined()
   })

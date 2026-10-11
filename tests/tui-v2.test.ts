@@ -507,3 +507,53 @@ describe("v2 per-model review", () => {
     })
   })
 })
+
+describe("v2 step-back: Esc goes back one step, not out of the wizard", () => {
+  // Each wizard is a linear form now. These pin the contract: Esc at step N > 1 re-asks
+  // step N-1 and writes nothing; only Esc at step 1 leaves and reports the cancellation.
+  const addStep1 = ["my-proxy", "https://provider.example/v1", ""]
+
+  it("add-provider: Esc at the URL step re-asks the name step and writes nothing", async () => {
+    const state = makeContext(
+      [{ status: "ok", message: "ready" }],
+      ["my-proxy", undefined, "my-proxy-2", "https://provider.example/v1", ""],
+      ["openai-chat", "slug"],
+    )
+    await runAdd(state)
+    // The name prompt was asked twice, so Esc went back rather than out.
+    const writes = state.calls.filter(c => c.method !== "list")
+    expect(writes.map(c => c.method)).toEqual(["add"])
+    expect(writes[0]?.input).toMatchObject({ providerId: "my-proxy-2" })
+    expect(state.toasts.some(x => /Cancelled/i.test(x.message))).toBe(false)
+  })
+
+  it("add-provider: Esc at the API type step re-asks the URL step", async () => {
+    const state = makeContext(
+      [{ status: "ok", message: "ready" }],
+      ["my-proxy", "https://a.example/v1", "https://b.example/v1", ""],
+      [undefined, "openai-chat", "slug"],
+    )
+    await runAdd(state)
+    const writes = state.calls.filter(c => c.method !== "list")
+    expect(writes.map(c => c.method)).toEqual(["add"])
+    expect(writes[0]?.input).toMatchObject({ baseURL: "https://b.example/v1" })
+    expect(state.toasts.some(x => /Cancelled/i.test(x.message))).toBe(false)
+  })
+
+  it("add-provider: Esc at step 1 is the only exit and reports it once", async () => {
+    const state = makeContext([], [undefined], [])
+    await runAdd(state)
+    expect(state.calls.filter(c => c.method !== "list")).toHaveLength(0)
+    expect(state.toasts.filter(x => /Cancelled/i.test(x.message))).toHaveLength(1)
+  })
+
+  it("add-provider: the happy path still writes exactly once", async () => {
+    const state = makeContext(
+      [{ status: "ok", message: "ready" }],
+      [...addStep1],
+      ["openai-chat", "slug"],
+    )
+    await runAdd(state)
+    expect(state.calls.filter(c => c.method !== "list").map(c => c.method)).toEqual(["add"])
+  })
+})

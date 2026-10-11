@@ -5,6 +5,34 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+Re-probing stops overwriting hand-tuned models, and the v2 write path refuses, remembers and reports honestly.
+
+### Added
+- Bulk model delete on OpenCode 2: the `delete-models` agent tool and the "Delete models" entry in the v2 edit menu. It is all-or-nothing, so one id that does not exist deletes nothing
+- Provider rename on OpenCode 2: the `rename-provider` agent tool and the "Rename provider" entry in the v2 edit menu. The renamed entry keeps its slot, and an id of `__proto__` survives the write
+
+### Changed
+- Re-probe no longer overwrites stored model data with a guess. Only a gateway measurement or a catalog lookup counts as authoritative, so a stored thinking level, image toggle or token limit survives the next probe, and a guess is no longer reported as an update
+- The v2 edit wizard is a loop: Esc inside a field returns to the menu, and only Esc at the menu leaves. An empty value writes nothing instead of a half-finished field
+- The v2 write path asks before it replaces an existing provider on every path (`add-provider`, `manual-add-models`, `add-from-catalog`), and it asks about a provider declared in opencode's own config, not only in the plugin's storage
+- The address that answered is remembered, so a bare host becomes the `/v1` variant that worked instead of re-walking the candidate list on every probe
+- A re-probe that cannot read its stored-model snapshot says so, rather than diffing against an empty map and reporting six saved models as six new ones
+- A vanished model's review row reads "Remove this model" instead of "Take the new values", since the decision behind it deletes the model, and the review option comes first so the safest choice sits under the cursor
+- `catalog.add` refuses a provider id that matches a built-in provider, the way `add` and `manual-add-models` already did
+- `editModel` validates a token limit at the RPC, and a stored value that is not a whole number reads as unset rather than being carried forward
+- A failed storage read no longer counts as an empty store, so a transient failure cannot delete every provider on the next write
+- A failed remove reports its failure instead of a success toast, and a failed reload is no longer reported as a failed write
+- The v1 surface repairs addresses the way v2 does: a bare host is normalised, and a string that is not a host is no longer given an invented scheme
+- A credential in a URL fragment is stripped before anything is logged
+- The build clears `dist/` before compiling, so a file whose source is gone can no longer ship
+
+### Fixed
+- `applyModelFields` writes `variants` as well as `reasoning` and `thinkingLevelMap`, so editing a model's thinking level reaches the model picker. `readModelFields` reads the ceiling back from `variants` first, so a probed model no longer reads as "off" when the endpoint names thinking levels
+- A rebuild of the provider key order no longer drops a `__proto__` provider: the rebuild and the write-back both use `defineProperty`
+- Esc during the catalog flow no longer turns an escaped model list into "add every model"
+
 ## [1.0.2] - 2026-10-10
 
 OpenCode 2 support, and a beginner-proof setup path on both hosts.

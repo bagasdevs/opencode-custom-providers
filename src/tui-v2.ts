@@ -132,36 +132,66 @@ async function askToken(ctx: V2TuiContext, title: string, current: number | unde
 }
 
 async function editOneModel(ctx: V2TuiContext, providerId: string, model: ModelRow): Promise<void> {
-  const reasoning = await ctx.ui.dialog.select({
-    title: `Thinking level for ${model.id}`,
-    options: REASONING_LEVELS.map(level => ({
-      title: reasoningLabel(level),
-      value: level,
-      description: level === model.reasoning ? "Currently set" : undefined,
-    })),
-  })
-  if (reasoning === undefined) {
-    cancelled(ctx)
-    return
+  // Four steps, and Esc inside one goes back to the previous step instead of dropping the
+  // whole edit. Only Esc at the first step leaves, and that is the one that reports it.
+  let reasoning = ""
+  let image = ""
+  let contextEdit: TokenEdit | undefined
+  let outputEdit: TokenEdit | undefined
+  for (let step = 1; step <= 4; ) {
+    if (step === 1) {
+      const answer = await ctx.ui.dialog.select({
+        title: `Thinking level for ${model.id}`,
+        options: REASONING_LEVELS.map(level => ({
+          title: reasoningLabel(level),
+          value: level,
+          description: level === model.reasoning ? "Currently set" : undefined,
+        })),
+      })
+      if (answer === undefined) {
+        cancelled(ctx)
+        return
+      }
+      reasoning = answer
+      step = 2
+      continue
+    }
+    if (step === 2) {
+      const answer = await ctx.ui.dialog.select({
+        title: `Can ${model.id} read images?`,
+        options: [
+          { title: "Yes", value: "yes", description: "Sends text and images" },
+          { title: "No", value: "no", description: "Sends text only" },
+        ],
+      })
+      if (answer === undefined) {
+        step = 1
+        continue
+      }
+      image = answer
+      step = 3
+      continue
+    }
+    if (step === 3) {
+      const answer = await askToken(ctx, `Context window for ${model.id}`, model.context)
+      if (answer === undefined) {
+        step = 2
+        continue
+      }
+      contextEdit = answer
+      step = 4
+      continue
+    }
+    const answer = await askToken(ctx, `Longest reply for ${model.id}`, model.output)
+    if (answer === undefined) {
+      step = 3
+      continue
+    }
+    outputEdit = answer
+    break
   }
-  const image = await ctx.ui.dialog.select({
-    title: `Can ${model.id} read images?`,
-    options: [
-      { title: "Yes", value: "yes", description: "Sends text and images" },
-      { title: "No", value: "no", description: "Sends text only" },
-    ],
-  })
-  if (image === undefined) {
-    cancelled(ctx)
-    return
-  }
-  const contextEdit = await askToken(ctx, `Context window for ${model.id}`, model.context)
-  if (contextEdit === undefined) {
-    cancelled(ctx)
-    return
-  }
-  const outputEdit = await askToken(ctx, `Longest reply for ${model.id}`, model.output)
-  if (outputEdit === undefined) {
+  // askToken only returns once the prompt parsed, so both edits are present here.
+  if (contextEdit === undefined || outputEdit === undefined) {
     cancelled(ctx)
     return
   }
@@ -300,109 +330,139 @@ function repairBaseURL(raw: string): string | undefined {
 }
 
 async function wizardAdd(ctx: V2TuiContext): Promise<void> {
-  let providerId = await ctx.ui.dialog.prompt({
-    title: "Step 1 of 5: Name for this provider",
-    description:
-      "Any short name you will recognise later. Letters, numbers, hyphens and underscores only. Example: my-proxy",
-    placeholder: "my-proxy",
-  })
-  if (!providerId) {
-    cancelled(ctx)
-    return
-  }
-  providerId = providerId.trim()
-  if (!ID_PATTERN.test(providerId)) {
-    fail(
-      ctx,
-      `'${providerId}' cannot be used as a name. Use only letters, numbers, hyphens and underscores: for example my-proxy. Run /add-provider to start again.`,
-    )
-    return
-  }
-  // Reusing a built-in provider name would rewrite that provider's settings, so offer a safe name instead.
-  const clash = collisionSuggestion(providerId)
-  if (clash) {
-    const use = await ctx.ui.dialog.confirm({
-      title: "That name is already used by a built-in provider",
-      message: `'${providerId}' belongs to an opencode built-in provider. Using it may change your existing ${providerId} setup.\n\nUse '${clash}' instead?`,
-      label: { confirm: `Use ${clash}`, cancel: "Go back" },
-    })
-    if (!use) {
-      cancelled(ctx)
-      return
-    }
-    providerId = clash
-  }
-  // Replacing an existing provider of ours would silently drop its models, so confirm first.
-  const existing = await call<{ providers: Array<{ id: string }> }>(ctx, "list").catch(() => undefined)
-  if (existing?.providers?.some(entry => entry.id === providerId)) {
-    const replace = await ctx.ui.dialog.confirm({
-      title: "You already have a provider with this name",
-      message: `Adding '${providerId}' again replaces the one you have now, including its model list.\n\nReplace it?`,
-      label: { confirm: "Replace it", cancel: "Go back" },
-    })
-    if (!replace) {
-      cancelled(ctx)
-      return
-    }
-  }
-
-  let baseURL: string | undefined
-  for (;;) {
-    baseURL = await ctx.ui.dialog.prompt({
-      title: "Step 2 of 5: Base URL",
-      description:
-        "Paste your provider's API address: it is on their setup page, labelled \"Base URL\" or \"API endpoint\". " +
-        "It looks like https://api.example.com/v1. A local server like Ollama uses http://localhost:11434/v1.",
-      placeholder: "https://api.example.com/v1",
-    })
-    if (!baseURL) {
-      cancelled(ctx)
-      return
-    }
-    const repaired = repairBaseURL(baseURL)
-    if (repaired) {
-      const use = await ctx.ui.dialog.confirm({
-        title: "Did you mean this address?",
-        message: `'${baseURL}' is missing the start of the address.\n\nUse '${repaired}' instead?`,
-        label: { confirm: "Use this address", cancel: "Type it again" },
+  // Esc inside a step goes back one step, so a mistake at step 4 does not cost the user
+  // steps 1 to 3. Only Esc at step 1 leaves the wizard and reports the cancellation.
+  let providerId = ""
+  let baseURL = ""
+  let flavor = ""
+  let apiKey: string | undefined
+  let displayStyle = ""
+  for (let step = 1; step <= 5; ) {
+    if (step === 1) {
+      const answer = await ctx.ui.dialog.prompt({
+        title: "Step 1 of 5: Name for this provider",
+        description:
+          "Any short name you will recognise later. Letters, numbers, hyphens and underscores only. Example: my-proxy",
+        placeholder: "my-proxy",
+        value: providerId || undefined,
       })
-      if (use) {
-        baseURL = repaired
-        break
+      if (!answer) {
+        // The first step: there is nothing behind it, so this is the only real exit.
+        cancelled(ctx)
+        return
       }
+      const trimmed = answer.trim()
+      if (!ID_PATTERN.test(trimmed)) {
+        fail(
+          ctx,
+          `'${trimmed}' cannot be used as a name. Use only letters, numbers, hyphens and underscores: for example my-proxy. Run /add-provider to start again.`,
+        )
+        continue
+      }
+      // Reusing a built-in provider name would rewrite that provider's settings, so offer a safe name instead.
+      const clash = collisionSuggestion(trimmed)
+      if (clash) {
+        const use = await ctx.ui.dialog.confirm({
+          title: "That name is already used by a built-in provider",
+          message: `'${trimmed}' belongs to an opencode built-in provider. Using it may change your existing ${trimmed} setup.\n\nUse '${clash}' instead?`,
+          label: { confirm: `Use ${clash}`, cancel: "Go back" },
+        })
+        // "Go back" means the name step, not the whole wizard.
+        if (!use) continue
+        providerId = clash
+      } else {
+        providerId = trimmed
+      }
+      // Replacing an existing provider of ours would silently drop its models, so confirm first.
+      const existing = await call<{ providers: Array<{ id: string }> }>(ctx, "list").catch(() => undefined)
+      if (existing?.providers?.some(entry => entry.id === providerId)) {
+        const replace = await ctx.ui.dialog.confirm({
+          title: "You already have a provider with this name",
+          message: `Adding '${providerId}' again replaces the one you have now, including its model list.\n\nReplace it?`,
+          label: { confirm: "Replace it", cancel: "Go back" },
+        })
+        if (!replace) continue
+      }
+      step = 2
       continue
     }
-    if (isValidUrl(baseURL)) break
-    await ctx.ui.dialog.alert({
-      title: "That address could not be read",
-      message:
-        "It must start with https:// (or http:// for a local server) and look like https://api.example.com/v1.\n\nNothing was saved: please try again.",
+
+    if (step === 2) {
+      const answer = await ctx.ui.dialog.prompt({
+        title: "Step 2 of 5: Base URL",
+        description:
+          "Paste your provider's API address: it is on their setup page, labelled \"Base URL\" or \"API endpoint\". " +
+          "It looks like https://api.example.com/v1. A local server like Ollama uses http://localhost:11434/v1.",
+        placeholder: "https://api.example.com/v1",
+        value: baseURL || undefined,
+      })
+      if (!answer) {
+        step = 1
+        continue
+      }
+      let candidate = answer
+      const repaired = repairBaseURL(candidate)
+      if (repaired) {
+        const use = await ctx.ui.dialog.confirm({
+          title: "Did you mean this address?",
+          message: `'${candidate}' is missing the start of the address.\n\nUse '${repaired}' instead?`,
+          label: { confirm: "Use this address", cancel: "Type it again" },
+        })
+        // "Type it again" re-asks this same step.
+        if (!use) continue
+        candidate = repaired
+      }
+      if (!isValidUrl(candidate)) {
+        await ctx.ui.dialog.alert({
+          title: "That address could not be read",
+          message:
+            "It must start with https:// (or http:// for a local server) and look like https://api.example.com/v1.\n\nNothing was saved: please try again.",
+        })
+        continue
+      }
+      baseURL = candidate
+      step = 3
+      continue
+    }
+
+    if (step === 3) {
+      const answer = await ctx.ui.dialog.select({
+        title: "Step 3 of 5: API type",
+        placeholder: "Pick the first one if you are unsure",
+        options: FLAVOR_OPTIONS,
+      })
+      if (!answer) {
+        step = 2
+        continue
+      }
+      flavor = answer
+      step = 4
+      continue
+    }
+
+    if (step === 4) {
+      const answer = await askApiKey(ctx, "Step 4 of 5: API key")
+      if (answer === undefined) {
+        step = 3
+        continue
+      }
+      apiKey = answer
+      step = 5
+      continue
+    }
+
+    const answer = await ctx.ui.dialog.select({
+      title: "Step 5 of 5: How should models appear in the model list?",
+      options: SIMPLE_OPTIONS,
     })
+    if (!answer) {
+      step = 4
+      continue
+    }
+    displayStyle = answer
+    break
   }
 
-  const flavor = await ctx.ui.dialog.select({
-    title: "Step 3 of 5: API type",
-    placeholder: "Pick the first one if you are unsure",
-    options: FLAVOR_OPTIONS,
-  })
-  if (!flavor) {
-    cancelled(ctx)
-    return
-  }
-
-  const apiKey = await askApiKey(ctx, "Step 4 of 5: API key")
-  if (apiKey === undefined) {
-    cancelled(ctx)
-    return
-  }
-  const displayStyle = await ctx.ui.dialog.select({
-    title: "Step 5 of 5: How should models appear in the model list?",
-    options: SIMPLE_OPTIONS,
-  })
-  if (!displayStyle) {
-    cancelled(ctx)
-    return
-  }
   const input = {
     providerId,
     baseURL,
@@ -487,43 +547,68 @@ async function wizardCatalogAdd(ctx: V2TuiContext): Promise<void> {
     fail(ctx, "The built-in catalog is empty, so there is nothing to pick. Use /add-provider instead.")
     return
   }
-  const site = await ctx.ui.dialog.select({
-    title: "Pick a provider from the catalog",
-    placeholder: "You still need that provider's API key",
-    options: sites.map(entry => ({
-      title: entry.name,
-      value: entry.id,
-      description: `${entry.modelCount} model(s) available`,
-    })),
-  })
-  if (!site) {
-    cancelled(ctx)
-    return
-  }
-  const providerId = await ctx.ui.dialog.prompt({
-    title: "Name for this provider",
-    description: "Any short name you will recognise later. Letters, numbers, hyphens and underscores only.",
-    placeholder: site,
-    value: site,
-  })
-  if (!providerId) {
-    cancelled(ctx)
-    return
-  }
-  const models = await ctx.ui.dialog.prompt({
-    title: "Which models? (optional)",
-    description:
-      "Type model names separated by commas, for example claude-sonnet-4-5, gpt-4o. " +
-      "Leave empty to add every model this provider offers: that is the safe choice.",
-  })
-  if (models === undefined) {
-    cancelled(ctx)
-    return
-  }
-  const apiKey = await askApiKey(ctx, "API key for this provider (paste it if you have one)")
-  if (apiKey === undefined) {
-    cancelled(ctx)
-    return
+  // Esc inside a step goes back one step; only Esc at the site picker leaves the wizard.
+  let site = ""
+  let providerId = ""
+  let models: string | undefined
+  let apiKey: string | undefined
+  for (let step = 1; step <= 4; ) {
+    if (step === 1) {
+      const answer = await ctx.ui.dialog.select({
+        title: "Pick a provider from the catalog",
+        placeholder: "You still need that provider's API key",
+        options: sites.map(entry => ({
+          title: entry.name,
+          value: entry.id,
+          description: `${entry.modelCount} model(s) available`,
+        })),
+      })
+      if (!answer) {
+        cancelled(ctx)
+        return
+      }
+      site = answer
+      step = 2
+      continue
+    }
+    if (step === 2) {
+      const answer = await ctx.ui.dialog.prompt({
+        title: "Name for this provider",
+        description: "Any short name you will recognise later. Letters, numbers, hyphens and underscores only.",
+        placeholder: site,
+        value: providerId || site,
+      })
+      if (!answer) {
+        step = 1
+        continue
+      }
+      providerId = answer
+      step = 3
+      continue
+    }
+    if (step === 3) {
+      const answer = await ctx.ui.dialog.prompt({
+        title: "Which models? (optional)",
+        description:
+          "Type model names separated by commas, for example claude-sonnet-4-5, gpt-4o. " +
+          "Leave empty to add every model this provider offers: that is the safe choice.",
+        value: models,
+      })
+      if (answer === undefined) {
+        step = 2
+        continue
+      }
+      models = answer
+      step = 4
+      continue
+    }
+    const answer = await askApiKey(ctx, "API key for this provider (paste it if you have one)")
+    if (answer === undefined) {
+      step = 3
+      continue
+    }
+    apiKey = answer
+    break
   }
   const { message } = await call<{ message: string }>(ctx, "catalog.add", {
     site,
