@@ -97,7 +97,7 @@ function done(ctx: V2TuiContext, message: string): void {
 }
 
 function statusSuffix(provider: ProviderRow): string {
-  return provider.pending > 0 ? ` (${provider.pending} new model(s) found: run /reload-models to add them)` : ""
+  return provider.pending > 0 ? ` (${provider.pending} new model(s) found: run /custom-providers, then "Reload all models", to add them)` : ""
 }
 
 function cancelled(ctx: V2TuiContext): void {
@@ -216,7 +216,7 @@ async function wizardEditModels(ctx: V2TuiContext, providerId: string): Promise<
   }
   if (models.length === 0) {
     ctx.ui.toast.show({
-      message: `'${providerId}' has no models yet. Fix its address and key with /edit-provider, then run /reload-models.`,
+      message: `'${providerId}' has no models yet. Fix its address and key with /custom-providers: "Edit a provider", then "Reload all models".`,
       variant: "warning",
     })
     return
@@ -253,7 +253,7 @@ async function pickProvider(ctx: V2TuiContext): Promise<ProviderRow | undefined>
   const { providers } = await call<{ providers: ProviderRow[] }>(ctx, "list")
   if (providers.length === 0) {
     ctx.ui.toast.show({
-      message: "You have no custom providers yet. Run /add-provider to add your first one.",
+      message: "You have no custom providers yet. Run /custom-providers to add your first one.",
       variant: "warning",
     })
     return undefined
@@ -275,7 +275,7 @@ async function askApiKey(ctx: V2TuiContext, title: string): Promise<string | und
     title,
     description:
       "Paste the key you got from your provider (it often starts with sk-). Most providers need one. " +
-      "It is saved in opencode's secure key store, never shown again, and you can replace it any time with /edit-provider. " +
+      "It is saved in opencode's secure key store, never shown again, and you can replace it any time with /custom-providers, then 'Edit a provider'. " +
       "Leave empty only for local servers like Ollama. Press Esc to cancel: nothing is saved until the last step.",
   })
 }
@@ -359,7 +359,7 @@ async function wizardAdd(ctx: V2TuiContext): Promise<void> {
       if (!ID_PATTERN.test(trimmed)) {
         fail(
           ctx,
-          `'${trimmed}' cannot be used as a name. Use only letters, numbers, hyphens and underscores: for example my-proxy. Run /add-provider to start again.`,
+          `'${trimmed}' cannot be used as a name. Use only letters, numbers, hyphens and underscores: for example my-proxy. Run /custom-providers to start again.`,
         )
         continue
       }
@@ -548,7 +548,7 @@ Add another provider on the same address?`,
 async function wizardCatalogAdd(ctx: V2TuiContext): Promise<void> {
   const { sites } = await call<{ sites: SiteRow[] }>(ctx, "catalog.list")
   if (sites.length === 0) {
-    fail(ctx, "The built-in catalog is empty, so there is nothing to pick. Use /add-provider instead.")
+    fail(ctx, "The built-in catalog is empty, so there is nothing to pick. Use /custom-providers instead.")
     return
   }
   // Esc inside a step goes back one step; only Esc at the site picker leaves the wizard.
@@ -849,7 +849,7 @@ async function wizardDelete(ctx: V2TuiContext): Promise<void> {
   if (!provider) return
   const confirmed = await ctx.ui.dialog.confirm({
     title: "Remove this provider?",
-    message: `Remove '${provider.id}' and its ${provider.models} model(s)?\n\nThis cannot be undone. Your other opencode settings are not touched. You can add it again later with /add-provider.`,
+    message: `Remove '${provider.id}' and its ${provider.models} model(s)?\n\nThis cannot be undone. Your other opencode settings are not touched. You can add it again later from /custom-providers.`,
     label: { confirm: "Remove it", cancel: "Keep it" },
   })
   if (!confirmed) {
@@ -875,29 +875,60 @@ async function wizardList(ctx: V2TuiContext): Promise<void> {
     ? providers
         .map(provider =>
           provider.models === 0
-            ? `${provider.id}: NOT READY (no models yet)\n  ${provider.baseURL}\n  Fix it with /edit-provider (check the URL and API key), then /reload-models`
+            ? `${provider.id}: NOT READY (no models yet)\n  ${provider.baseURL}\n  Fix it with /custom-providers: "Edit a provider" to check the URL and API key, then "Reload all models"`
             : `${provider.id}: ${provider.models} model(s) ready${statusSuffix(provider)}\n  ${provider.baseURL}`,
         )
         .join("\n\n")
-    : "You have no custom providers yet. Run /add-provider to add your first one."
+    : "You have no custom providers yet. Run /custom-providers to add your first one."
   await ctx.ui.dialog.alert({ title: "Your custom providers", message })
 }
 
+async function wizardHub(ctx: V2TuiContext): Promise<void> {
+  // One command replaces eight, so the menu has to come back after an action: that is what
+  // makes a single visit enough to list, add, edit and delete.
+  //
+  // The hub owns the exit message. A sub-wizard reports its own cancellation, which is
+  // accurate: that flow really was abandoned. But once an action has run, leaving the hub
+  // must stay quiet, because "Nothing was changed" would be false.
+  let ran = false
+  for (;;) {
+    const action = await ctx.ui.dialog.select({
+      title: "Custom providers",
+      placeholder: "Pick what you want to do",
+      options: [
+        { title: "List my providers", value: "list", description: "Show every custom provider and its models" },
+        { title: "Add a provider", value: "add", description: "Set up a new API provider step by step" },
+        { title: "Add a known provider", value: "catalog", description: "Pick a provider from the built-in list" },
+        { title: "Edit a provider", value: "edit", description: "Change its address, API type, key, or how models are named" },
+        { title: "Delete a provider", value: "delete", description: "Remove a provider and its models" },
+        { title: "Check for new models", value: "reprobe", description: "Ask your provider whether it has new models" },
+        { title: "Review model changes", value: "review", description: "See what changed and choose what to keep" },
+        { title: "Reload all models", value: "reload", description: "Refresh every provider from its own address" },
+      ],
+    })
+    if (!action) {
+      if (!ran) cancelled(ctx)
+      return
+    }
+    ran = true
+    if (action === "list") await wizardList(ctx)
+    else if (action === "add") await wizardAdd(ctx)
+    else if (action === "catalog") await wizardCatalogAdd(ctx)
+    else if (action === "edit") await wizardEdit(ctx)
+    else if (action === "delete") await wizardDelete(ctx)
+    else if (action === "reprobe") await wizardReprobe(ctx)
+    else if (action === "review") await wizardApplyReconcile(ctx)
+    else await wizardRefresh(ctx)
+  }
+}
+
 const COMMANDS = [
-  { name: "add-provider", title: "Add a provider", description: "Set up a new API provider step by step", run: wizardAdd },
-  { name: "list-custom-providers", title: "List my providers", description: "Show every custom provider and its models", run: wizardList },
   {
-    name: "check-for-new-models",
-    aliases: ["reprobe-models"],
-    title: "Check for new models",
-    description: "Ask your provider whether it has new models",
-    run: wizardReprobe,
+    name: "custom-providers",
+    title: "Custom providers",
+    description: "Add, edit, check or remove your custom providers",
+    run: wizardHub,
   },
-  { name: "reload-models", title: "Reload all models", description: "Refresh every provider from its own address", run: wizardRefresh },
-  { name: "add-known-provider", title: "Add a known provider", description: "Pick a provider from the built-in list", run: wizardCatalogAdd },
-  { name: "review-model-changes", aliases: ["apply-reconcile"], title: "Review model changes", description: "See what changed and choose what to keep", run: wizardApplyReconcile },
-  { name: "edit-provider", title: "Edit a provider", description: "Change its address, API type, key, or how models are named", run: wizardEdit },
-  { name: "delete-provider", title: "Delete a provider", description: "Remove a provider and its models", run: wizardDelete },
 ] as const
 
 export const setup = (ctx: V2TuiContext): void => {
@@ -909,10 +940,7 @@ export const setup = (ctx: V2TuiContext): void => {
       description: command.description,
       group: "Custom providers",
       palette: true as const,
-      slash: {
-        name: command.name,
-        aliases: "aliases" in command ? [...command.aliases] : undefined,
-      },
+      slash: { name: command.name },
       run: async () => {
         try {
           await command.run(ctx)
@@ -922,7 +950,7 @@ export const setup = (ctx: V2TuiContext): void => {
             title: "Something went wrong",
             message:
               "The action did not finish and nothing was changed.\n" +
-              "Run /list-custom-providers to see the current state, then try again.\n\n" +
+              "Run /custom-providers and choose 'List my providers' to see the current state, then try again.\n\n" +
               `Technical detail (for bug reports): ${error instanceof Error ? error.message : String(error)}`,
           })
         }

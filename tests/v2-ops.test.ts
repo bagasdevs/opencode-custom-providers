@@ -615,8 +615,8 @@ function makeTui(script: TuiScript) {
 
 async function runEditProvider(state: ReturnType<typeof makeTui>): Promise<void> {
   setupTui(state.context)
-  const command = state.getLayer()?.commands?.find(item => item.slash?.name === "edit-provider")
-  if (!command) throw new Error("edit-provider command was not registered")
+  const command = state.getLayer()?.commands?.find(item => item.slash?.name === "custom-providers")
+  if (!command) throw new Error("custom-providers command was not registered")
   await command.run()
 }
 
@@ -644,7 +644,7 @@ describe("edit-provider wizard layering", () => {
 
   it("returns to the menu when the Base URL prompt is abandoned", async () => {
     const state = makeTui({
-      selects: ["bulk-proxy", "baseURL", undefined],
+      selects: ["edit", "bulk-proxy", "baseURL", undefined],
       prompts: [undefined],
       confirms: [],
       responses: responses(),
@@ -666,7 +666,7 @@ describe("edit-provider wizard layering", () => {
 
   it("exits the wizard when the top menu is abandoned", async () => {
     const state = makeTui({
-      selects: ["bulk-proxy", undefined],
+      selects: ["edit", "bulk-proxy", undefined],
       prompts: [],
       confirms: [],
       responses: responses(),
@@ -681,7 +681,7 @@ describe("edit-provider wizard layering", () => {
 
   it("lets the user make one change and then leave", async () => {
     const state = makeTui({
-      selects: ["bulk-proxy", "baseURL", undefined],
+      selects: ["edit", "bulk-proxy", "baseURL", undefined],
       prompts: ["https://new.example/v1"],
       confirms: [],
       responses: responses(),
@@ -700,7 +700,7 @@ describe("edit-provider wizard layering", () => {
 
   it("keeps the current key when the API key prompt is left empty", async () => {
     const state = makeTui({
-      selects: ["bulk-proxy", "apiKey", undefined],
+      selects: ["edit", "bulk-proxy", "apiKey", undefined],
       prompts: [""],
       confirms: [],
       responses: responses(),
@@ -715,7 +715,7 @@ describe("edit-provider wizard layering", () => {
 
   it("deletes the models the user confirmed", async () => {
     const state = makeTui({
-      selects: ["bulk-proxy", "deleteModels", undefined],
+      selects: ["edit", "bulk-proxy", "deleteModels", undefined],
       prompts: ["model-a, model-b"],
       confirms: [true],
       responses: responses(),
@@ -732,7 +732,7 @@ describe("edit-provider wizard layering", () => {
 
   it("writes nothing when the delete confirm is declined", async () => {
     const state = makeTui({
-      selects: ["bulk-proxy", "deleteModels", undefined],
+      selects: ["edit", "bulk-proxy", "deleteModels", undefined],
       prompts: ["model-a"],
       confirms: [false],
       responses: responses(),
@@ -746,7 +746,7 @@ describe("edit-provider wizard layering", () => {
 
   it("renames the provider the user confirmed", async () => {
     const state = makeTui({
-      selects: ["bulk-proxy", "rename", undefined],
+      selects: ["edit", "bulk-proxy", "rename", undefined],
       prompts: ["bulk-proxy-2"],
       confirms: [true],
       responses: responses(),
@@ -762,7 +762,7 @@ describe("edit-provider wizard layering", () => {
 
   it("reports a rename the server refused", async () => {
     const state = makeTui({
-      selects: ["bulk-proxy", "rename", undefined],
+      selects: ["edit", "bulk-proxy", "rename", undefined],
       prompts: ["openai"],
       confirms: [true],
       responses: responses({
@@ -784,7 +784,7 @@ describe("edit-provider wizard layering", () => {
 
   it("writes nothing when the rename prompt is abandoned", async () => {
     const state = makeTui({
-      selects: ["bulk-proxy", "rename", undefined],
+      selects: ["edit", "bulk-proxy", "rename", undefined],
       prompts: [undefined],
       confirms: [],
       responses: responses(),

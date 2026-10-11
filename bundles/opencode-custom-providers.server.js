@@ -2141,14 +2141,14 @@ ${probeHint(error)}`,
         } catch (error) {
           lines.push(
             `The API key could NOT be saved, so this provider cannot sign in yet.
-Run /edit-provider and choose "API key" to add one before using it.
+Run /custom-providers, then choose "Edit a provider" and "API key" to add one before using it.
 
 Technical detail: ${sanitizeErrorMessage(error)}`
           );
         }
       } else {
         lines.push(
-          'No API key was given, so this provider may not be able to sign in. If it needs one, run /edit-provider and choose "API key": nothing else has to be redone.'
+          'No API key was given, so this provider may not be able to sign in. If it needs one, run /custom-providers, then choose "Edit a provider" and "API key": nothing else has to be redone.'
         );
       }
       if (!input.apiKey) {
@@ -2218,7 +2218,7 @@ Technical detail: ${sanitizeErrorMessage(error)}`
           await ctx.integration.connect.key({ integrationID: candidate.providerId, key: input.apiKey });
           keyMessage = " The API key was saved securely.";
         } catch (error) {
-          keyMessage = ` The API key could NOT be saved, so this provider cannot sign in yet. Run /edit-provider and choose "API key" to add one before using it. Technical detail: ${sanitizeErrorMessage(error)}`;
+          keyMessage = ` The API key could NOT be saved, so this provider cannot sign in yet. Run /custom-providers, then choose "Edit a provider" and "API key" to add one before using it. Technical detail: ${sanitizeErrorMessage(error)}`;
         }
       } else {
         keyMessage = " No API key was given; add one later if this provider requires it.";
@@ -2231,7 +2231,7 @@ Technical detail: ${sanitizeErrorMessage(error)}`
     edit: async (input) => {
       const current = managed.get(input.providerId);
       if (!current && !candidates.has(input.providerId)) {
-        return { message: `There is no provider named '${input.providerId}'. Run /list-custom-providers to see your providers.` };
+        return { message: `There is no provider named '${input.providerId}'. Run /custom-providers and choose "List my providers" to see them.` };
       }
       if (input.baseURL !== void 0) input.baseURL = normalizeBaseUrl(input.baseURL);
       if (input.baseURL !== void 0 && !isValidUrl(input.baseURL)) {
@@ -2255,7 +2255,7 @@ Technical detail: ${sanitizeErrorMessage(error)}`
           await ctx.integration.connect.key({ integrationID: input.providerId, key: input.apiKey });
         } catch (error) {
           keyWarning = `The new API key could NOT be saved, so the old one is still in use.
-Run /edit-provider and choose "API key" to try again.
+Run /custom-providers, then choose "Edit a provider" and "API key" to try again.
 
 Technical detail: ${sanitizeErrorMessage(error)}`;
         }
@@ -2276,7 +2276,7 @@ Technical detail: ${sanitizeErrorMessage(error)}`;
           return {
             message: `Saved. '${input.providerId}' now uses the new address, but it did not answer with a model list yet.
 ${probeHint(error)}
-The address used before was: ${previousURL || "(none)"}. Run /edit-provider and paste it back if the provider stops working.
+The address used before was: ${previousURL || "(none)"}. Run /custom-providers, then "Edit a provider" and paste it back if the provider stops working.
 
 Technical detail: ${sanitizeErrorMessage(error)}`
           };
@@ -2319,7 +2319,7 @@ Technical detail: ${sanitizeErrorMessage(error)}` };
     listModels: async (input) => {
       const models = discovered.get(input.providerId);
       if (!models) {
-        return { status: "unknown_provider", message: `There is no provider named '${input.providerId}'. Run /list-custom-providers to see your providers.`, models: [] };
+        return { status: "unknown_provider", message: `There is no provider named '${input.providerId}'. Run /custom-providers and choose "List my providers" to see them.`, models: [] };
       }
       return {
         status: "ok",
@@ -2344,11 +2344,11 @@ Technical detail: ${sanitizeErrorMessage(error)}` };
     editModel: async (input) => {
       const models = discovered.get(input.providerId);
       if (!models) {
-        return { status: "unknown_provider", message: `There is no provider named '${input.providerId}'. Run /list-custom-providers to see your providers.` };
+        return { status: "unknown_provider", message: `There is no provider named '${input.providerId}'. Run /custom-providers and choose "List my providers" to see them.` };
       }
       const draft = models.get(input.modelId);
       if (!draft) {
-        return { status: "unknown_model", message: `Provider '${input.providerId}' has no model named '${input.modelId}'. Run /edit-provider to check its models.` };
+        return { status: "unknown_model", message: `Provider '${input.providerId}' has no model named '${input.modelId}'. Run /custom-providers and choose "Edit a provider" to check its models.` };
       }
       if (input.reasoning !== void 0 && !REASONING_LEVELS.includes(input.reasoning)) {
         return { status: "invalid", message: `'${input.reasoning}' is not a reasoning level. Pick one from the list.` };
@@ -2381,12 +2381,12 @@ Technical detail: ${sanitizeErrorMessage(error)}` };
     remove: async (providerId) => {
       const wasManaged = managed.delete(providerId);
       if (!wasManaged && !candidates.has(providerId)) {
-        return { message: `There is no provider named '${providerId}'. Run /list-custom-providers to see your providers.` };
+        return { message: `There is no provider named '${providerId}'. Run /custom-providers and choose "List my providers" to see them.` };
       }
       if (!wasManaged) {
         return {
           message: `'${providerId}' comes from your opencode config, not from this plugin, so it was left alone.
-Remove its entry from your opencode config to stop using it, or use /edit-provider to point it elsewhere.`
+Remove its entry from your opencode config to stop using it, or use /custom-providers, then "Edit a provider", to point it elsewhere.`
         };
       }
       removed.add(providerId);
@@ -2406,12 +2406,12 @@ Remove its entry from your opencode config to stop using it, or use /edit-provid
       discovered.delete(providerId);
       await reloadQuietly();
       return {
-        message: `Removed '${providerId}' and its ${staleModels.length} model${staleModels.length === 1 ? "" : "s"}. Your other opencode settings are not touched. You can add it again later with /add-provider.`
+        message: `Removed '${providerId}' and its ${staleModels.length} model${staleModels.length === 1 ? "" : "s"}. Your other opencode settings are not touched. You can add it again later from /custom-providers.`
       };
     },
     reprobe: async (providerId) => {
       const candidate = candidates.get(providerId);
-      if (!candidate) return { message: `There is no provider named '${providerId}'. Run /list-custom-providers to see your providers.` };
+      if (!candidate) return { message: `There is no provider named '${providerId}'. Run /custom-providers and choose "List my providers" to see them.` };
       let fresh;
       try {
         fresh = await discover(candidate);
@@ -2464,7 +2464,7 @@ Restart opencode and run this again, or use 'Apply everything' which does not ne
     },
     apply: async (input) => {
       const candidate = candidates.get(input.providerId);
-      if (!candidate) return { message: `There is no provider named '${input.providerId}'. Run /list-custom-providers to see your providers.` };
+      if (!candidate) return { message: `There is no provider named '${input.providerId}'. Run /custom-providers and choose "List my providers" to see them.` };
       const keepOnly = input.mode === "keep";
       const decisions = {};
       if (input.decisions !== void 0 && input.decisions !== "") {
@@ -2539,7 +2539,7 @@ Technical detail: ${sanitizeErrorMessage(error)}` };
       if (outcome.failed.length > 0) {
         lines.push(
           `Could not reach: ${outcome.failed.join(", ")}. Their saved models were kept.
-Fix with /edit-provider (check the address and the API key), then run /reload-models again.`
+Fix it with /custom-providers: 'Edit a provider' to check the address and the API key, then 'Reload all models'.`
         );
       }
       if (outcome.updated.length === 0 && outcome.failed.length === 0 && outcome.empty.length === 0) {
@@ -2589,7 +2589,7 @@ Fix with /edit-provider (check the address and the API key), then run /reload-mo
           lines.push("The API key was saved securely. You will not need to type it again.");
         } catch (error) {
           lines.push(`The API key could NOT be saved, so this provider cannot sign in yet.
-Run /edit-provider and choose "API key" to add one before using it.
+Run /custom-providers, then choose "Edit a provider" and "API key" to add one before using it.
 
 Technical detail: ${sanitizeErrorMessage(error)}`);
         }
@@ -2601,7 +2601,7 @@ Technical detail: ${sanitizeErrorMessage(error)}`);
       if (!models) {
         return {
           status: "unknown_provider",
-          message: `There is no provider named '${input.providerId}'. Run /list-custom-providers to see your providers.`,
+          message: `There is no provider named '${input.providerId}'. Run /custom-providers and choose "List my providers" to see them.`,
           deleted: 0
         };
       }
@@ -2640,7 +2640,7 @@ Technical detail: ${sanitizeErrorMessage(error)}`);
 Remove its entry from your opencode config to change its name.`
         } : {
           status: "unknown_provider",
-          message: `There is no provider named '${input.providerId}'. Run /list-custom-providers to see your providers.`
+          message: `There is no provider named '${input.providerId}'. Run /custom-providers and choose "List my providers" to see them.`
         };
       }
       const clean = input.newId.trim();
@@ -2658,7 +2658,7 @@ Remove its entry from your opencode config to change its name.`
         return {
           status: "invalid",
           message: `'${clean}' is already one of your providers, so renaming would merge the two.
-Pick a different name, or remove '${clean}' with /delete-provider first.`
+Pick a different name, or remove '${clean}' with /custom-providers first.`
         };
       }
       removed.delete(clean);
@@ -2715,7 +2715,7 @@ Pick a different name, or remove '${clean}' with /delete-provider first.`
       return {
         status: "ok",
         message: `Done. '${input.providerId}' is now called '${clean}'. Its models and settings are unchanged.
-An API key saved for '${input.providerId}' stays stored under that name, so if sign-in fails afterwards, add the key again with /edit-provider.`
+An API key saved for '${input.providerId}' stays stored under that name, so if sign-in fails afterwards, add the key again from /custom-providers.`
       };
     }
   };

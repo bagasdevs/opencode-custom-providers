@@ -31,7 +31,7 @@ bun add github:bagasdevs/opencode-custom-providers && bun pm trust opencode-cust
 opencode plugin opencode-custom-providers
 ```
 
-**3. Restart opencode, open the TUI, run `/add-provider`, and follow the prompts:**
+**3. Restart opencode, open the TUI, run `/custom-providers`, and follow the prompts:**
 pick a flavor (e.g. OpenAI Chat), enter the base URL and API key, done.
 Models are discovered and enriched automatically.
 
@@ -54,25 +54,27 @@ by the model.
 
 ### TUI slash commands
 
-OpenCode 2 uses the names on the left. OpenCode 1 registers the same flows under the names in
-parentheses.
+OpenCode 2 keeps the slash list short: one command opens a menu with every flow in it, and the
+menu comes back after each action so several things can be done in one visit. OpenCode 1 still
+registers the flows as separate commands, under the names in the right-hand column.
 
-| Command | What it does |
-| --- | --- |
-| `/add-provider` | Set up a new API provider step by step (probes the endpoint) |
-| `/add-known-provider` | Pick a provider from the built-in models.dev list (no probing) |
-| `/list-custom-providers` | Show every custom provider and its models |
-| `/check-for-new-models` (`reprobe-models`) | Ask one provider whether it has new models |
-| `/review-model-changes` (`apply-reconcile`) | See what changed and choose what to keep |
-| `/reload-models` (`refresh-models`) | Refresh every provider from its own address |
-| `/edit-provider` | Change a provider's address, API type, key, or model naming |
-| `/delete-provider` | Remove a provider and its models |
+| `/custom-providers` menu entry | OpenCode 1 command | What it does |
+| --- | --- | --- |
+| Add a provider | `/add-provider` | Set up a new API provider step by step (probes the endpoint) |
+| Add a known provider | `/add-known-provider` | Pick a provider from the built-in models.dev list (no probing) |
+| List my providers | `/list-custom-providers` | Show every custom provider and its models |
+| Check for new models | `/check-for-new-models` (`reprobe-models`) | Ask one provider whether it has new models |
+| Review model changes | `/review-model-changes` (`apply-reconcile`) | See what changed and choose what to keep |
+| Reload all models | `/reload-models` (`refresh-models`) | Refresh every provider from its own address |
+| Edit a provider | `/edit-provider` | Change a provider's address, API type, key, or model naming |
+| Delete a provider | `/delete-provider` | Remove a provider and its models |
 
-In the v2 edit wizard, Esc inside a field returns to the menu, so several changes can be made
-in one visit. Only Esc at the menu leaves the wizard.
+Inside the wizards, Esc goes back one level instead of abandoning the whole flow: at a field it
+returns to that wizard's menu, and at a step of a linear form it returns to the previous step.
+Esc at the top menu is the only exit, and it reports the cancellation once.
 
-OpenCode 1 has no `/list-custom-providers`, `/add-known-provider` or `/review-model-changes`;
-the catalog and reconcile flows live inside its own wizards instead.
+OpenCode 1 has no list, catalog or review flow of its own; the catalog and reconcile flows live
+inside its own wizards instead.
 
 ### Agent tools
 
