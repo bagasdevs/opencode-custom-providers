@@ -307,7 +307,10 @@ describe("v2 model field editing", () => {
     { id: "gpt-4o-mini", name: "gpt-4o-mini", reasoning: "off", reasoningLabel: "Off - no reasoning", image: false },
   ]
 
-  const modelsResult = { models: modelRows, status: "ok", message: "" }
+  // The picker refreshes its list by splicing the array it was handed, so each test needs
+  // its own copy: sharing one array makes a test that under-scripts its responses empty the
+  // fixture for every test that runs after it.
+  const modelsResult = () => ({ models: modelRows.map(row => ({ ...row })), status: "ok", message: "" })
 
   async function runEditModels(state: ReturnType<typeof makeContext>): Promise<void> {
     setup(state.context)
@@ -318,7 +321,7 @@ describe("v2 model field editing", () => {
 
   it("sends the edited fields to editModel", async () => {
     const state = makeContext(
-      [modelsResult, { message: "Saved 'gpt-4o': reasoning off." }, modelsResult],
+      [modelsResult(), { message: "Saved 'gpt-4o': reasoning off." },modelsResult()],
       ["", "0"],
       ["my-proxy", "model", "gpt-4o", "off", "no", ""],
       [provider],
@@ -340,7 +343,7 @@ describe("v2 model field editing", () => {
 
   it("keeps the current token limits when both prompts are left blank", async () => {
     const state = makeContext(
-      [modelsResult, { message: "saved" }, modelsResult],
+      [modelsResult(), { message: "saved" },modelsResult()],
       ["", ""],
       ["my-proxy", "model", "gpt-4o-mini", "max", "yes", ""],
       [provider],
@@ -361,7 +364,7 @@ describe("v2 model field editing", () => {
 
   it("re-prompts on a bad token count instead of sending it", async () => {
     const state = makeContext(
-      [modelsResult, { message: "saved" }, modelsResult],
+      [modelsResult(), { message: "saved" },modelsResult()],
       ["12abc", "64000", ""],
       ["my-proxy", "model", "gpt-4o", "high", "yes", ""],
       [provider],
@@ -376,7 +379,7 @@ describe("v2 model field editing", () => {
 
   it("writes nothing when the user backs out of the model list", async () => {
     const state = makeContext(
-      [{ models: modelRows, status: "ok", message: "" }],
+      [modelsResult()],
       [],
       ["my-proxy", "model", undefined],
       [provider],
@@ -389,7 +392,7 @@ describe("v2 model field editing", () => {
 
   it("writes nothing when the user backs out of a field prompt", async () => {
     const state = makeContext(
-      [{ models: modelRows, status: "ok", message: "" }],
+      [modelsResult()],
       [],
       ["my-proxy", "model", "gpt-4o", undefined],
       [provider],
@@ -429,6 +432,39 @@ describe("v2 model field editing", () => {
     expect(state.toasts.some(toast => toast.message.includes("has no models yet"))).toBe(true)
     expect(state.calls.some(call => call.method === "editModel")).toBe(false)
   })
+  it("returns to the menu quietly when the picker's Done option is chosen", async () => {
+    // "Done" carries the empty string, and the old falsy guard treated it like Esc and
+    // toasted "Cancelled. Nothing was changed." A submenu back-out is not a cancellation.
+    // "my-proxy" picks the provider, "model" opens the picker, "" is Done, and the last
+    // undefined leaves the menu so the wizard can end normally.
+    const state = makeContext([modelsResult()], [], ["my-proxy", "model", "", undefined], [provider])
+
+    await runEditModels(state)
+
+    // The picker's Done must not toast; the only cancel toast is the menu's own Esc.
+    const menuEsc = state.toasts.filter(toast => /Cancelled/i.test(toast.message))
+    expect(menuEsc).toHaveLength(1)
+    expect(state.calls.some(call => call.method === "editModel")).toBe(false)
+  })
+
+  it("does not claim nothing changed when Esc leaves the picker after an edit", async () => {
+    // The picker is inside the edit wizard, so an edit can already have landed. A cancel
+    // toast here would contradict the write that just happened.
+    const state = makeContext(
+      [modelsResult(), { message: "Saved 'gpt-4o': reasoning off." },modelsResult()],
+      ["", "0"],
+      ["my-proxy", "model", "gpt-4o", "off", "no", "", undefined],
+      [provider],
+    )
+
+    await runEditModels(state)
+    expect(state.calls.some(call => call.method === "editModel")).toBe(true)
+    // Exactly one cancel toast: the picker's Esc must not add a false one on top of the
+    // menu's honest report.
+    const cancelToasts = state.toasts.filter(toast => /Cancelled/i.test(toast.message))
+    expect(cancelToasts).toHaveLength(1)
+  })
+
 })
 
 describe("v2 catalog add cancellation", () => {

@@ -2160,9 +2160,17 @@ Technical detail: ${sanitizeErrorMessage(error)}`
       if (!validId(input.providerId)) {
         return { status: "invalid", message: "Use a provider name with letters, numbers, hyphens, or underscores." };
       }
-      input.baseURL = normalizeBaseUrl(input.baseURL);
-      if (!isValidUrl(input.baseURL)) {
+      const current = managed.get(input.providerId);
+      if (input.baseURL !== void 0) input.baseURL = normalizeBaseUrl(input.baseURL);
+      if (input.baseURL !== void 0 && !isValidUrl(input.baseURL)) {
         return { status: "invalid", message: "Enter a complete address starting with https:// (or http:// for a local server)." };
+      }
+      const resolvedURL = input.baseURL ?? current?.baseURL ?? candidates.get(input.providerId)?.baseURL;
+      if (resolvedURL === void 0) {
+        return {
+          status: "invalid",
+          message: `Enter the address for '${input.providerId}': it is not one of your providers yet, so there is nothing to add models to.`
+        };
       }
       const clash = collisionSuggestion(input.providerId);
       if (clash && !input.overwrite) {
@@ -2178,11 +2186,11 @@ Technical detail: ${sanitizeErrorMessage(error)}`
       if (!modelIds?.length) {
         return { status: "invalid", message: "Enter at least one model id, separated by commas." };
       }
-      const flavor = input.flavor === void 0 ? DEFAULT_FLAVOR : parseFlavor(input.flavor);
+      const flavor = input.flavor === void 0 ? current?.flavor ?? DEFAULT_FLAVOR : parseFlavor(input.flavor);
       if (!flavor) {
         return { status: "invalid", message: `'${input.flavor}' is not a known API type. Pick one from the list.` };
       }
-      const displayStyle = input.displayStyle === "name" ? "name" : "slug";
+      const displayStyle = input.displayStyle ?? current?.displayStyle ?? "slug";
       const previews = await previewManualModels(modelIds, flavor, displayStyle);
       if (previews.length === 0) {
         return { status: "invalid", message: "No usable model ids were entered. Add at least one model id and try again." };
@@ -2190,7 +2198,7 @@ Technical detail: ${sanitizeErrorMessage(error)}`
       const unique = [...new Map(previews.map((preview) => [preview.id, preview.probed])).values()];
       const candidate = {
         providerId: input.providerId,
-        baseURL: input.baseURL,
+        baseURL: resolvedURL,
         apiKey: input.apiKey,
         overrideKey: input.apiKey,
         flavor,
@@ -2772,7 +2780,7 @@ An API key saved for '${input.providerId}' stays stored under that name, so if s
               overwrite: { type: "boolean" },
               confirmReplace: { type: "boolean", description: "Replace an existing provider of the same name." }
             },
-            required: ["providerId", "baseURL", "modelIds"],
+            required: ["providerId", "modelIds"],
             additionalProperties: false
           },
           output: MANUAL_ADD_OUTPUT
@@ -2955,6 +2963,7 @@ An API key saved for '${input.providerId}' stays stored under that name, so if s
                   properties: {
                     id: { type: "string" },
                     name: { type: "string" },
+                    api: { type: "string", description: "The provider's API address, when the catalog lists one" },
                     modelCount: { type: "number" }
                   },
                   required: ["id", "name", "modelCount"],
@@ -3061,7 +3070,7 @@ An API key saved for '${input.providerId}' stays stored under that name, so if s
     });
     tools.add({
       name: "manual-add-models",
-      description: "Add models by id when a provider does not list them automatically. Does not contact the provider endpoint.",
+      description: "Add models by id when a provider does not list them automatically. Does not contact the provider endpoint. baseURL is only needed when the provider does not exist yet.",
       input: {
         type: "object",
         properties: {
@@ -3078,7 +3087,7 @@ An API key saved for '${input.providerId}' stays stored under that name, so if s
           overwrite: { type: "boolean", description: "Allow replacing a built-in provider with the same id" },
           confirmReplace: { type: "boolean", description: "Replace an existing provider of the same name. Required when the name is already taken." }
         },
-        required: ["providerId", "baseURL", "modelIds"],
+        required: ["providerId", "modelIds"],
         additionalProperties: false
       },
       execute: async (raw2) => ({

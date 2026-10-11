@@ -299,11 +299,11 @@ async function wizardEditModels(ctx, providerId) {
         { title: "Done", value: "", description: "Go back" }
       ]
     });
-    if (!picked) {
+    if (picked === "") return;
+    if (picked === void 0) {
       cancelled(ctx);
       return;
     }
-    if (picked === "") return;
     const model = models.find((item) => item.id === picked);
     if (model) await editOneModel(ctx, providerId, model);
     const again = await call(ctx, "listModels", { providerId });

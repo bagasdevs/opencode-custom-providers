@@ -148,6 +148,7 @@ export interface ListModelsResult {
 export interface SiteRow {
   id: string
   name: string
+  api?: string
   modelCount: number
 }
 
@@ -740,7 +741,7 @@ if ((managed.has(input.providerId) || candidates.has(input.providerId)) && !inpu
 
     manualAdd: async (input: {
       providerId: string
-      baseURL: string
+      baseURL?: string
       modelIds: string
       apiKey?: string
       flavor?: string
@@ -751,9 +752,21 @@ if ((managed.has(input.providerId) || candidates.has(input.providerId)) && !inpu
       if (!validId(input.providerId)) {
         return { status: "invalid", message: "Use a provider name with letters, numbers, hyphens, or underscores." }
       }
-      input.baseURL = normalizeBaseUrl(input.baseURL)
-      if (!isValidUrl(input.baseURL)) {
+      // Adding ids to a provider that already exists needs no address, and requiring one
+      // made the call impossible for a caller that only knows the provider id: the schema
+      // refused it, and the normalise below would have thrown on undefined. An address
+      // given here still wins, so the wizard's flow is unchanged.
+      const current = managed.get(input.providerId)
+      if (input.baseURL !== undefined) input.baseURL = normalizeBaseUrl(input.baseURL)
+      if (input.baseURL !== undefined && !isValidUrl(input.baseURL)) {
         return { status: "invalid", message: "Enter a complete address starting with https:// (or http:// for a local server)." }
+      }
+      const resolvedURL = input.baseURL ?? current?.baseURL ?? candidates.get(input.providerId)?.baseURL
+      if (resolvedURL === undefined) {
+        return {
+          status: "invalid",
+          message: `Enter the address for '${input.providerId}': it is not one of your providers yet, so there is nothing to add models to.`,
+        }
       }
       const clash = collisionSuggestion(input.providerId)
       if (clash && !input.overwrite) {
@@ -769,11 +782,13 @@ if ((managed.has(input.providerId) || candidates.has(input.providerId)) && !inpu
       if (!modelIds?.length) {
         return { status: "invalid", message: "Enter at least one model id, separated by commas." }
       }
-      const flavor = input.flavor === undefined ? DEFAULT_FLAVOR : parseFlavor(input.flavor)
+      const flavor = input.flavor === undefined ? current?.flavor ?? DEFAULT_FLAVOR : parseFlavor(input.flavor)
       if (!flavor) {
         return { status: "invalid", message: `'${input.flavor}' is not a known API type. Pick one from the list.` }
       }
-      const displayStyle: DisplayStyle = input.displayStyle === "name" ? "name" : "slug"
+      // Same reasoning as the address: adding models to an existing provider must not
+      // silently reset how its models are named or which API style it speaks.
+      const displayStyle: DisplayStyle = input.displayStyle ?? current?.displayStyle ?? "slug"
       const previews = await previewManualModels(modelIds, flavor, displayStyle)
       if (previews.length === 0) {
         return { status: "invalid", message: "No usable model ids were entered. Add at least one model id and try again." }
@@ -781,7 +796,7 @@ if ((managed.has(input.providerId) || candidates.has(input.providerId)) && !inpu
       const unique = [...new Map(previews.map(preview => [preview.id, preview.probed])).values()]
       const candidate: Candidate = {
         providerId: input.providerId,
-        baseURL: input.baseURL,
+        baseURL: resolvedURL,
         apiKey: input.apiKey,
         overrideKey: input.apiKey,
         flavor,
@@ -1475,7 +1490,7 @@ if ((managed.has(input.providerId) || candidates.has(input.providerId)) && !inpu
               overwrite: { type: "boolean" },
               confirmReplace: { type: "boolean", description: "Replace an existing provider of the same name." },
             },
-            required: ["providerId", "baseURL", "modelIds"],
+            required: ["providerId", "modelIds"],
             additionalProperties: false,
           },
           output: MANUAL_ADD_OUTPUT,
@@ -1658,6 +1673,7 @@ if ((managed.has(input.providerId) || candidates.has(input.providerId)) && !inpu
                   properties: {
                     id: { type: "string" },
                     name: { type: "string" },
+                    api: { type: "string", description: "The provider's API address, when the catalog lists one" },
                     modelCount: { type: "number" },
                   },
                   required: ["id", "name", "modelCount"],
@@ -1778,7 +1794,9 @@ if ((managed.has(input.providerId) || candidates.has(input.providerId)) && !inpu
 
     tools.add({
       name: "manual-add-models",
-      description: "Add models by id when a provider does not list them automatically. Does not contact the provider endpoint.",
+      description:
+        "Add models by id when a provider does not list them automatically. Does not contact the provider " +
+        "endpoint. baseURL is only needed when the provider does not exist yet.",
       input: {
         type: "object",
         properties: {
@@ -1795,7 +1813,7 @@ if ((managed.has(input.providerId) || candidates.has(input.providerId)) && !inpu
           overwrite: { type: "boolean", description: "Allow replacing a built-in provider with the same id" },
           confirmReplace: { type: "boolean", description: "Replace an existing provider of the same name. Required when the name is already taken." },
         },
-        required: ["providerId", "baseURL", "modelIds"],
+        required: ["providerId", "modelIds"],
         additionalProperties: false,
       },
       execute: async (raw) => ({

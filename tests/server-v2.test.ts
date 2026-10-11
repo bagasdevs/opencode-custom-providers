@@ -291,6 +291,75 @@ describe("v2 manualAdd", () => {
       )
     }
   })
+
+  it("adds models to an existing provider without being given its address", async () => {
+    // An agent that only knows the provider id could not call this at all: baseURL was
+    // required, and the handler normalised it before any lookup, so the address-less call
+    // was refused by the schema and would have thrown on undefined. The address is
+    // already stored, so it is not the caller's problem.
+    vi.stubGlobal("fetch", async () => new Response("{}", { status: 200 }))
+    const { handlers, definitions } = await registeredHandlers()
+    const manualAdd = handlers["manualAdd"]
+    if (!manualAdd) throw new Error("manualAdd RPC was not registered")
+
+    const input = definitions["manualAdd"]?.input as { required?: string[] } | undefined
+    expect(input?.required ?? []).not.toContain("baseURL")
+
+    const created = await manualAdd({ providerId: "addr", baseURL: "https://provider.example/v1", modelIds: "m-one" })
+    expect(created).toMatchObject({ status: "ok" })
+
+    // No baseURL, and the provider exists: the stored address is reused.
+    const added = await manualAdd({ providerId: "addr", modelIds: "m-two", confirmReplace: true })
+    expect(added).toMatchObject({ status: "ok" })
+    expect(String((added as { message?: string }).message)).toMatch(/Added 1 model/)
+
+    // A provider that does not exist yet still needs an address, and says so.
+    const orphan = await manualAdd({ providerId: "nowhere", modelIds: "m-three" })
+    expect(orphan).toMatchObject({ status: "invalid" })
+    expect(String((orphan as { message?: string }).message)).toMatch(/Enter the address/)
+  })
+
+  it("keeps an existing provider's flavor and name style when they are not given", async () => {
+    // With the address now optional, flavor and displayStyle are the next silent rewrites:
+    // defaulting them would reset a provider that speaks anthropic back to openai-chat and
+    // its friendly names back to ids, just because the caller only sent model ids. Both are
+    // stored in the plugin's own record, so read the last storage payload.
+    vi.stubGlobal("fetch", async () => new Response("{}", { status: 200 }))
+    const { handlers, stored } = await registeredHandlers()
+    const manualAdd = handlers["manualAdd"]
+    if (!manualAdd) throw new Error("manualAdd RPC was not registered")
+    const lastRecord = () => {
+      const payload = stored.at(-1) as Record<string, { flavor?: string; displayStyle?: string }> | undefined
+      return payload?.["styled"]
+    }
+
+    const created = await manualAdd({
+      providerId: "styled",
+      baseURL: "https://provider.example/v1",
+      modelIds: "m-one",
+      flavor: "anthropic",
+      displayStyle: "name",
+    })
+    expect(created).toMatchObject({ status: "ok" })
+    expect(lastRecord()?.flavor).toBe("anthropic")
+    expect(lastRecord()?.displayStyle).toBe("name")
+
+    const added = await manualAdd({ providerId: "styled", modelIds: "m-two", confirmReplace: true })
+    expect(added).toMatchObject({ status: "ok" })
+    expect(lastRecord()?.flavor).toBe("anthropic")
+    expect(lastRecord()?.displayStyle).toBe("name")
+  })
+
+  it("declares the api address the catalog returns", async () => {
+    // catalog.list returns rows that carry the provider's API address, but the output
+    // schema did not declare it, so the host silently stripped it from the wire.
+    vi.stubGlobal("fetch", async () => new Response("{}", { status: 200 }))
+    const { definitions } = await registeredHandlers()
+    const items = definitions["catalog.list"]?.output as
+      | { properties?: { sites?: { items?: { properties?: Record<string, unknown> } } } }
+      | undefined
+    expect(items?.properties?.sites?.items?.properties).toHaveProperty("api")
+  })
 })
 
 describe("v2 rpc wiring", () => {

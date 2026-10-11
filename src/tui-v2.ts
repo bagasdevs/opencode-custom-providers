@@ -233,11 +233,15 @@ async function wizardEditModels(ctx: V2TuiContext, providerId: string): Promise<
         { title: "Done", value: "", description: "Go back" },
       ],
     })
-    if (!picked) {
+    if (picked === "") return
+    // Only Esc means "go back quietly": this picker is a submenu of the edit wizard, so a
+    // cancel toast here would claim nothing changed right after an edit landed, and the
+    // wizard's own Esc already reports the real cancellation. The "Done" option uses the
+    // empty string, which the old falsy check swallowed before it could return.
+    if (picked === undefined) {
       cancelled(ctx)
       return
     }
-    if (picked === "") return
     const model = models.find(item => item.id === picked)
     if (model) await editOneModel(ctx, providerId, model)
     const again = await call<{ models?: ModelRow[] }>(ctx, "listModels", { providerId })
