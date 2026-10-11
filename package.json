@@ -34,7 +34,7 @@
     }
   },
   "scripts": {
-    "build": "tsc",
+    "build": "node ./scripts/clean-dist.mjs && tsc",
     "bundles": "node ./scripts/build-bundles.mjs",
     "postinstall": "node ./scripts/postinstall.js",
     "prepack": "npm run build && npm run bundles",

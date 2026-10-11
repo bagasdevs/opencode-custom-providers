@@ -28,7 +28,7 @@ bun add github:bagasdevs/opencode-custom-providers && bun pm trust opencode-cust
 **2. Confirm it loaded**
 
 ```bash
-opencode plugin list
+opencode plugin opencode-custom-providers
 ```
 
 **3. Restart opencode, open the TUI, run `/add-provider`, and follow the prompts:**
@@ -109,9 +109,9 @@ Keys: auth store · `OPENCODE_LOCAL_<ID>_API_KEY` · legacy inline `apiKey`
 ## Development
 
 ```bash
-npm install && npm run build   # tsc
+npm install && npm run build   # clean dist/, then tsc
 npm test                       # build + node tests
-npm run test:src               # vitest (104 tests)
+npm run test:src               # vitest (202 tests)
 npm run typecheck:tests        # typecheck src + tests
 npm run lint                   # eslint
 ```
