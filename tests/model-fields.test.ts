@@ -37,7 +37,7 @@ describe("applyModelFields reasoning", () => {
   it("removes both keys for off", () => {
     const draft: V2ModelDraft = { reasoning: true, thinkingLevelMap: { max: "max" } }
     applyModelFields(draft, { image: false, reasoning: "off" })
-    expect(draft).toStrictEqual({ capabilities: { input: ["text"] } })
+    expect(draft).toStrictEqual({ capabilities: { input: ["text"] }, variants: [] })
     expect("reasoning" in draft).toBe(false)
     expect("thinkingLevelMap" in draft).toBe(false)
   })
@@ -47,21 +47,40 @@ describe("applyModelFields reasoning", () => {
       capabilities: { input: ["text", "image"] },
       reasoning: true,
       thinkingLevelMap: { low: null, medium: null, high: null },
+      variants: [{ id: "minimal", label: "minimal", thinkingLevel: "minimal" }],
     })
     expect(applied("low")).toStrictEqual({
       capabilities: { input: ["text", "image"] },
       reasoning: true,
       thinkingLevelMap: { medium: null, high: null },
+      variants: [
+        { id: "minimal", label: "minimal", thinkingLevel: "minimal" },
+        { id: "low", label: "low", thinkingLevel: "low" },
+      ],
     })
     expect(applied("medium")).toStrictEqual({
       capabilities: { input: ["text", "image"] },
       reasoning: true,
       thinkingLevelMap: { high: null },
+      variants: [
+        { id: "minimal", label: "minimal", thinkingLevel: "minimal" },
+        { id: "low", label: "low", thinkingLevel: "low" },
+        { id: "medium", label: "medium", thinkingLevel: "medium" },
+      ],
     })
   })
 
   it("writes no map for high, the default ceiling", () => {
-    expect(applied("high")).toStrictEqual({ capabilities: { input: ["text", "image"] }, reasoning: true })
+    expect(applied("high")).toStrictEqual({
+      capabilities: { input: ["text", "image"] },
+      reasoning: true,
+      variants: [
+        { id: "minimal", label: "minimal", thinkingLevel: "minimal" },
+        { id: "low", label: "low", thinkingLevel: "low" },
+        { id: "medium", label: "medium", thinkingLevel: "medium" },
+        { id: "high", label: "high", thinkingLevel: "high" },
+      ],
+    })
     expect("thinkingLevelMap" in applied("high")).toBe(false)
   })
 
@@ -70,12 +89,16 @@ describe("applyModelFields reasoning", () => {
       capabilities: { input: ["text", "image"] },
       reasoning: true,
       thinkingLevelMap: { xhigh: "xhigh" },
+      variants: [
+        { id: "minimal", label: "minimal", thinkingLevel: "minimal" },
+        { id: "low", label: "low", thinkingLevel: "low" },
+        { id: "medium", label: "medium", thinkingLevel: "medium" },
+        { id: "high", label: "high", thinkingLevel: "high" },
+        { id: "xhigh", label: "xhigh", thinkingLevel: "xhigh" },
+      ],
     })
-    expect(applied("max")).toStrictEqual({
-      capabilities: { input: ["text", "image"] },
-      reasoning: true,
-      thinkingLevelMap: { xhigh: "xhigh", max: "max" },
-    })
+    expect(applied("max").variants).toHaveLength(6)
+    expect(applied("max").variants?.at(-1)).toStrictEqual({ id: "max", label: "max", thinkingLevel: "max" })
   })
 
   it("clears a stale map when the new ceiling needs none", () => {
@@ -88,16 +111,25 @@ describe("applyModelFields reasoning", () => {
     const draft: V2ModelDraft = {
       name: "sonnet",
       capabilities: { tools: true, input: ["text"], output: ["text"] },
-      variants: [{ id: "high" }],
     }
     applyModelFields(draft, { image: true, reasoning: "medium" })
     expect(draft).toStrictEqual({
       name: "sonnet",
       capabilities: { tools: true, input: ["text", "image"], output: ["text"] },
-      variants: [{ id: "high" }],
       reasoning: true,
       thinkingLevelMap: { high: null },
+      variants: [
+        { id: "minimal", label: "minimal", thinkingLevel: "minimal" },
+        { id: "low", label: "low", thinkingLevel: "low" },
+        { id: "medium", label: "medium", thinkingLevel: "medium" },
+      ],
     })
+  })
+
+  it("replaces the variants the probe wrote, since the host reads them", () => {
+    const draft: V2ModelDraft = { variants: [{ id: "low" }, { id: "medium" }, { id: "high" }] }
+    applyModelFields(draft, { image: true, reasoning: "max" })
+    expect(draft.variants?.map(v => (v as { id: string }).id)).toEqual(["minimal", "low", "medium", "high", "xhigh", "max"])
   })
 })
 
@@ -192,7 +224,10 @@ describe("read then apply round trip", () => {
   it("keeps a fieldless draft unchanged", () => {
     const draft: V2ModelDraft = {}
     applyModelFields(draft, readModelFields(draft))
-    expect(draft).toStrictEqual({ capabilities: { input: ["text", "image"] } })
+    expect(draft).toStrictEqual({
+      capabilities: { input: ["text", "image"] },
+      variants: [],
+    })
     expect(readModelFields(draft)).toStrictEqual(readModelFields({}))
   })
 
@@ -202,6 +237,10 @@ describe("read then apply round trip", () => {
       limit: { context: 128_000, output: 4096 },
       reasoning: true,
       thinkingLevelMap: { medium: null, high: null },
+      variants: [
+        { id: "minimal", label: "minimal", thinkingLevel: "minimal" },
+        { id: "low", label: "low", thinkingLevel: "low" },
+      ],
     }
     const before = structuredClone(draft)
     applyModelFields(draft, readModelFields(draft))

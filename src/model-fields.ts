@@ -70,14 +70,47 @@ function thinkingMapFor(ceiling: ReasoningLevel): ThinkingLevelMap {
   return map
 }
 
+/** Which thinking levels a ceiling leaves available, in ascending order.
+ *
+ * The host decides what a model offers from `variants`, not from `reasoning` or
+ * `thinkingLevelMap`, so those two alone leave an edit invisible in the model
+ * picker. The shape matches what the probe writes. */
+export function variantsForCeiling(ceiling: ReasoningLevel): Array<{ id: string; label: string; thinkingLevel: string }> {
+  if (ceiling === "off") return []
+  const ceilingIndex = REASONING_LEVELS.indexOf(ceiling)
+  return REASONING_LEVELS.slice(1, ceilingIndex + 1).map(level => ({ id: level, label: level, thinkingLevel: level }))
+}
+
+/** Thinking levels named by a stored `variants` list, in ascending order. The host
+ * reads this list, so it is the truthful record of what the model offers. */
+function ceilingFromVariants(draft: V2ModelDraft): ReasoningLevel | undefined {
+  const raw = draft.variants
+  if (!Array.isArray(raw) || raw.length === 0) return undefined
+  let best: ReasoningLevel | undefined
+  for (const entry of raw) {
+    if (typeof entry !== "object" || entry === null) continue
+    const id = (entry as { id?: unknown }).id
+    if (typeof id !== "string") continue
+    const level = REASONING_LEVELS.find(candidate => candidate === id)
+    if (level === undefined || level === "off") continue
+    if (best === undefined || REASONING_LEVELS.indexOf(level) > REASONING_LEVELS.indexOf(best)) best = level
+  }
+  return best
+}
+
 /** Read the editable fields out of a draft, permissively: a draft that names no
  * field reads as image on, reasoning off, both limits unset. */
 export function readModelFields(draft: V2ModelDraft): ModelFields {
   const input = draft.capabilities?.input
   const limit = draft.limit
+  // A probe writes variants but no `reasoning` key, and a model that names thinking
+  // levels does reason, so the variants are the better signal than the key alone.
+  const fromVariants = ceilingFromVariants(draft)
   return {
     image: Array.isArray(input) ? input.includes("image") : true,
-    reasoning: draft.reasoning === true ? ceilingFromMap(readMap(draft)) : "off",
+    reasoning: draft.reasoning === true || fromVariants !== undefined
+      ? (fromVariants ?? ceilingFromMap(readMap(draft)))
+      : "off",
     context: typeof limit?.context === "number" ? limit.context : undefined,
     output: typeof limit?.output === "number" ? limit.output : undefined,
   }
@@ -97,6 +130,7 @@ export function applyModelFields(draft: V2ModelDraft, fields: ModelFields): void
     if (Object.keys(map).length > 0) draft.thinkingLevelMap = map
     else delete draft.thinkingLevelMap
   }
+  draft.variants = variantsForCeiling(fields.reasoning)
 
   // 0 is the clear signal from the token prompts, same as leaving a field out.
   const setContext = typeof fields.context === "number" && fields.context > 0

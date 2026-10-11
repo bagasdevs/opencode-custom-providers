@@ -180,3 +180,37 @@ describe("v2 manualAdd", () => {
     expect(requests.every(url => !url.startsWith("https://provider.example"))).toBe(true)
   })
 })
+
+describe("v2 rpc wiring", () => {
+  // A method declared in the schema but missing from the handler map is invisible to the host:
+  // the call fails with rpc.method_not_found even though the method type-checks and is tested
+  // through its ops function. This locks the two halves together.
+  it("exposes a handler for every declared method", async () => {
+    const state = await registeredHandlers()
+    const expected = [
+      "list",
+      "add",
+      "manualAdd",
+      "edit",
+      "listModels",
+      "editModel",
+      "remove",
+      "reprobe",
+      "apply",
+      "refresh",
+      "catalog.list",
+      "catalog.add",
+    ]
+    for (const method of expected) {
+      expect(typeof state.handlers[method], `no handler registered for '${method}'`).toBe("function")
+    }
+  })
+
+  it("routes listModels and editModel through to the ops layer", async () => {
+    const { handlers } = await registeredHandlers()
+    const missing = await handlers["listModels"]?.({ providerId: "nope" })
+    expect(missing).toMatchObject({ status: "unknown_provider" })
+    const noModel = await handlers["editModel"]?.({ providerId: "nope", modelId: "x" })
+    expect(noModel).toMatchObject({ status: "unknown_provider" })
+  })
+})

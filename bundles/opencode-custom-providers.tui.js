@@ -86,6 +86,30 @@ function collisionSuggestion(providerId) {
   return null;
 }
 
+// src/model-fields.ts
+var REASONING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
+function reasoningLabel(level) {
+  if (level === "off") return "Off - no reasoning";
+  if (level === "xhigh") return "xhigh - maximum (only if the model supports it)";
+  if (level === "max") return "max - maximum (only if the model supports it)";
+  return `${level} - cap reasoning at ${level}`;
+}
+var TOKEN_DIGITS = /^\d+$/;
+function parseTokenEdit(raw) {
+  const cleaned = raw.trim().replace(/[_,]/g, "");
+  if (!cleaned) return { action: "keep" };
+  if (!TOKEN_DIGITS.test(cleaned)) return null;
+  const parsed = Number.parseInt(cleaned, 10);
+  if (!Number.isSafeInteger(parsed)) return null;
+  return parsed === 0 ? { action: "clear" } : { action: "set", value: parsed };
+}
+function resolveTokenEdit(current, edit) {
+  if (edit === null) return current;
+  if (edit.action === "keep") return current;
+  if (edit.action === "clear") return 0;
+  return edit.value;
+}
+
 // src/security.ts
 var VALID_PROTOCOLS = /* @__PURE__ */ new Set(["http:", "https:"]);
 function isValidUrl(url) {
@@ -162,6 +186,101 @@ function statusSuffix(provider) {
 }
 function cancelled(ctx) {
   ctx.ui.toast.show({ title: "Custom providers", message: "Cancelled. Nothing was changed.", variant: "info" });
+}
+async function askToken(ctx, title, current) {
+  const placeholder = current === void 0 ? "e.g. 128000 (blank = leave unset)" : `current: ${current} (blank = keep, 0 = clear)`;
+  for (; ; ) {
+    const raw = await ctx.ui.dialog.prompt({ title, placeholder });
+    if (raw === void 0) return void 0;
+    const edit = parseTokenEdit(raw);
+    if (edit === null) {
+      ctx.ui.toast.show({ message: "Enter a whole number of tokens, or 0 to clear it.", variant: "warning" });
+      continue;
+    }
+    return edit;
+  }
+}
+async function editOneModel(ctx, providerId, model) {
+  const reasoning = await ctx.ui.dialog.select({
+    title: `Thinking level for ${model.id}`,
+    options: REASONING_LEVELS.map((level) => ({
+      title: reasoningLabel(level),
+      value: level,
+      description: level === model.reasoning ? "Currently set" : void 0
+    }))
+  });
+  if (reasoning === void 0) {
+    cancelled(ctx);
+    return;
+  }
+  const image = await ctx.ui.dialog.select({
+    title: `Can ${model.id} read images?`,
+    options: [
+      { title: "Yes", value: "yes", description: "Sends text and images" },
+      { title: "No", value: "no", description: "Sends text only" }
+    ]
+  });
+  if (image === void 0) {
+    cancelled(ctx);
+    return;
+  }
+  const contextEdit = await askToken(ctx, `Context window for ${model.id}`, model.context);
+  if (contextEdit === void 0) {
+    cancelled(ctx);
+    return;
+  }
+  const outputEdit = await askToken(ctx, `Longest reply for ${model.id}`, model.output);
+  if (outputEdit === void 0) {
+    cancelled(ctx);
+    return;
+  }
+  const context = resolveTokenEdit(model.context, contextEdit);
+  const output = resolveTokenEdit(model.output, outputEdit);
+  const { message } = await call(ctx, "editModel", {
+    providerId,
+    modelId: model.id,
+    reasoning,
+    image: image === "yes",
+    context,
+    output
+  });
+  await ctx.ui.dialog.alert({ title: `Edit ${model.id}`, message });
+}
+async function wizardEditModels(ctx, providerId) {
+  const { models, status, message } = await call(ctx, "listModels", { providerId });
+  if (status !== "ok") {
+    fail(ctx, message);
+    return;
+  }
+  if (models.length === 0) {
+    ctx.ui.toast.show({
+      message: `'${providerId}' has no models yet. Fix its address and key with /edit-provider, then run /reload-models.`,
+      variant: "warning"
+    });
+    return;
+  }
+  for (; ; ) {
+    const picked = await ctx.ui.dialog.select({
+      title: `Which model of ${providerId}?`,
+      options: [
+        ...models.map((model2) => ({
+          title: model2.name === model2.id ? model2.id : `${model2.name} (${model2.id})`,
+          value: model2.id,
+          description: `${model2.reasoningLabel}; images ${model2.image ? "yes" : "no"}; context ${model2.context ?? "unset"}; longest reply ${model2.output ?? "unset"}`
+        })),
+        { title: "Done", value: "", description: "Go back" }
+      ]
+    });
+    if (!picked) {
+      cancelled(ctx);
+      return;
+    }
+    if (picked === "") return;
+    const model = models.find((item) => item.id === picked);
+    if (model) await editOneModel(ctx, providerId, model);
+    const again = await call(ctx, "listModels", { providerId });
+    models.splice(0, models.length, ...again?.models ?? []);
+  }
 }
 async function pickProvider(ctx) {
   const { providers } = await call(ctx, "list");
@@ -460,11 +579,16 @@ async function wizardEdit(ctx) {
       { title: "Base URL", value: "baseURL", description: `Currently: ${provider.baseURL}` },
       { title: "API type", value: "flavor", description: `Currently: ${flavorLabel}` },
       { title: "How models are listed", value: "displayStyle", description: `Currently: ${styleLabel}` },
-      { title: "API key", value: "apiKey", description: "Replace the saved key" }
+      { title: "API key", value: "apiKey", description: "Replace the saved key" },
+      { title: "A model's settings", value: "model", description: "Change thinking, image input, or token limits" }
     ]
   });
   if (!field) {
     cancelled(ctx);
+    return;
+  }
+  if (field === "model") {
+    await wizardEditModels(ctx, provider.id);
     return;
   }
   let value;

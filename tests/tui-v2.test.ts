@@ -299,3 +299,132 @@ describe("v2 add without an API key", () => {
     expect(state.calls.find(c => c.method === "add")?.input).toMatchObject({ apiKey: "sk-test-123" })
   })
 })
+
+describe("v2 model field editing", () => {
+  const provider = { id: "my-proxy", models: 2 }
+  const modelRows = [
+    { id: "gpt-4o", name: "gpt-4o", reasoning: "high", reasoningLabel: "high - cap reasoning at high", image: true, context: 128000, output: 8192 },
+    { id: "gpt-4o-mini", name: "gpt-4o-mini", reasoning: "off", reasoningLabel: "Off - no reasoning", image: false },
+  ]
+
+  const modelsResult = { models: modelRows, status: "ok", message: "" }
+
+  async function runEditModels(state: ReturnType<typeof makeContext>): Promise<void> {
+    setup(state.context)
+    const command = state.getLayer()?.commands?.find(item => item.slash?.name === "edit-provider")
+    if (!command) throw new Error("edit-provider command was not registered")
+    await command.run()
+  }
+
+  it("sends the edited fields to editModel", async () => {
+    const state = makeContext(
+      [modelsResult, { message: "Saved 'gpt-4o': reasoning off." }, modelsResult],
+      ["", "0"],
+      ["my-proxy", "model", "gpt-4o", "off", "no", ""],
+      [provider],
+    )
+
+    await runEditModels(state)
+
+    const edit = state.calls.find(call => call.method === "editModel")
+    expect(edit?.input).toEqual({
+      providerId: "my-proxy",
+      modelId: "gpt-4o",
+      reasoning: "off",
+      image: false,
+      context: 128000,
+      output: 0,
+    })
+    expect(state.alerts.at(-1)?.message).toBe("Saved 'gpt-4o': reasoning off.")
+  })
+
+  it("keeps the current token limits when both prompts are left blank", async () => {
+    const state = makeContext(
+      [modelsResult, { message: "saved" }, modelsResult],
+      ["", ""],
+      ["my-proxy", "model", "gpt-4o-mini", "max", "yes", ""],
+      [provider],
+    )
+
+    await runEditModels(state)
+
+    const edit = state.calls.find(call => call.method === "editModel")
+    expect(edit?.input).toEqual({
+      providerId: "my-proxy",
+      modelId: "gpt-4o-mini",
+      reasoning: "max",
+      image: true,
+      context: undefined,
+      output: undefined,
+    })
+  })
+
+  it("re-prompts on a bad token count instead of sending it", async () => {
+    const state = makeContext(
+      [modelsResult, { message: "saved" }, modelsResult],
+      ["12abc", "64000", ""],
+      ["my-proxy", "model", "gpt-4o", "high", "yes", ""],
+      [provider],
+    )
+
+    await runEditModels(state)
+
+    const edit = state.calls.find(call => call.method === "editModel")
+    expect(edit?.input).toMatchObject({ context: 64000, output: 8192 })
+    expect(state.toasts.some(toast => /whole number of tokens/.test(toast.message))).toBe(true)
+  })
+
+  it("writes nothing when the user backs out of the model list", async () => {
+    const state = makeContext(
+      [{ models: modelRows, status: "ok", message: "" }],
+      [],
+      ["my-proxy", "model", undefined],
+      [provider],
+    )
+
+    await runEditModels(state)
+
+    expect(state.calls.some(call => call.method === "editModel")).toBe(false)
+  })
+
+  it("writes nothing when the user backs out of a field prompt", async () => {
+    const state = makeContext(
+      [{ models: modelRows, status: "ok", message: "" }],
+      [],
+      ["my-proxy", "model", "gpt-4o", undefined],
+      [provider],
+    )
+
+    await runEditModels(state)
+
+    expect(state.calls.some(call => call.method === "editModel")).toBe(false)
+  })
+
+  it("reports a provider whose models are unknown without prompting", async () => {
+    const state = makeContext(
+      [{ models: [], status: "unknown_provider", message: "There is no provider named 'my-proxy'." }],
+      [],
+      ["my-proxy", "model"],
+      [provider],
+    )
+
+    await runEditModels(state)
+
+    expect(state.toasts.at(-1)?.message).toBe("There is no provider named 'my-proxy'.")
+    expect(state.calls.some(call => call.method === "editModel")).toBe(false)
+  })
+
+  it("tells the user how to fix a provider with no models yet", async () => {
+    const state = makeContext(
+      [{ models: [], status: "ok", message: "" }],
+      [],
+      ["my-proxy", "model"],
+      [provider],
+    )
+
+    await runEditModels(state)
+
+    expect(state.toasts.at(-1)?.message).toContain("has no models yet")
+    expect(state.calls.some(call => call.method === "editModel")).toBe(false)
+  })
+})

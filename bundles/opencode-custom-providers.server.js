@@ -1508,6 +1508,103 @@ function mergeDiscoveredIntoStored(target, fresh) {
   }
 }
 
+// src/model-fields.ts
+var REASONING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
+var OPT_IN_LEVELS = /* @__PURE__ */ new Set(["xhigh", "max"]);
+function reasoningLabel(level) {
+  if (level === "off") return "Off - no reasoning";
+  if (level === "xhigh") return "xhigh - maximum (only if the model supports it)";
+  if (level === "max") return "max - maximum (only if the model supports it)";
+  return `${level} - cap reasoning at ${level}`;
+}
+function readMap(draft) {
+  const raw = draft.thinkingLevelMap;
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return void 0;
+  return raw;
+}
+function isEnabled(value) {
+  return value !== void 0 && value !== null;
+}
+function ceilingFromMap(map) {
+  if (!map) return "high";
+  if (isEnabled(map.max)) return "max";
+  if (isEnabled(map.xhigh)) return "xhigh";
+  for (let index = REASONING_LEVELS.length - 1; index >= 1; index--) {
+    const level = REASONING_LEVELS[index];
+    if (OPT_IN_LEVELS.has(level)) continue;
+    if (map[level] === null) continue;
+    return level;
+  }
+  return "high";
+}
+function thinkingMapFor(ceiling) {
+  const ceilingIndex = REASONING_LEVELS.indexOf(ceiling);
+  const map = {};
+  for (const level of REASONING_LEVELS) {
+    if (level === "off") continue;
+    const index = REASONING_LEVELS.indexOf(level);
+    if (OPT_IN_LEVELS.has(level)) {
+      if (ceilingIndex >= index) map[level] = level;
+    } else if (index > ceilingIndex) {
+      map[level] = null;
+    }
+  }
+  return map;
+}
+function variantsForCeiling(ceiling) {
+  if (ceiling === "off") return [];
+  const ceilingIndex = REASONING_LEVELS.indexOf(ceiling);
+  return REASONING_LEVELS.slice(1, ceilingIndex + 1).map((level) => ({ id: level, label: level, thinkingLevel: level }));
+}
+function ceilingFromVariants(draft) {
+  const raw = draft.variants;
+  if (!Array.isArray(raw) || raw.length === 0) return void 0;
+  let best;
+  for (const entry of raw) {
+    if (typeof entry !== "object" || entry === null) continue;
+    const id2 = entry.id;
+    if (typeof id2 !== "string") continue;
+    const level = REASONING_LEVELS.find((candidate) => candidate === id2);
+    if (level === void 0 || level === "off") continue;
+    if (best === void 0 || REASONING_LEVELS.indexOf(level) > REASONING_LEVELS.indexOf(best)) best = level;
+  }
+  return best;
+}
+function readModelFields(draft) {
+  const input = draft.capabilities?.input;
+  const limit = draft.limit;
+  const fromVariants = ceilingFromVariants(draft);
+  return {
+    image: Array.isArray(input) ? input.includes("image") : true,
+    reasoning: draft.reasoning === true || fromVariants !== void 0 ? fromVariants ?? ceilingFromMap(readMap(draft)) : "off",
+    context: typeof limit?.context === "number" ? limit.context : void 0,
+    output: typeof limit?.output === "number" ? limit.output : void 0
+  };
+}
+function applyModelFields(draft, fields) {
+  draft.capabilities = { ...draft.capabilities, input: fields.image ? ["text", "image"] : ["text"] };
+  if (fields.reasoning === "off") {
+    delete draft.reasoning;
+    delete draft.thinkingLevelMap;
+  } else {
+    draft.reasoning = true;
+    const map = thinkingMapFor(fields.reasoning);
+    if (Object.keys(map).length > 0) draft.thinkingLevelMap = map;
+    else delete draft.thinkingLevelMap;
+  }
+  draft.variants = variantsForCeiling(fields.reasoning);
+  const setContext = typeof fields.context === "number" && fields.context > 0;
+  const setOutput = typeof fields.output === "number" && fields.output > 0;
+  if (!setContext && !setOutput && !draft.limit) return;
+  const limit = { ...draft.limit };
+  if (setContext) limit.context = fields.context;
+  else delete limit.context;
+  if (setOutput) limit.output = fields.output;
+  else delete limit.output;
+  if (Object.keys(limit).length > 0) draft.limit = limit;
+  else delete draft.limit;
+}
+
 // src/ids.ts
 var id = "opencode-custom-providers";
 
@@ -2092,6 +2189,57 @@ Technical detail: ${sanitizeErrorMessage(error)}` };
         message: changed.length > 0 ? `Saved. '${input.providerId}' now has ${changed.join(", ")}.` : `Saved. '${input.providerId}' is unchanged.`
       };
     },
+    listModels: async (input) => {
+      const models = discovered.get(input.providerId);
+      if (!models) {
+        return { status: "unknown_provider", message: `There is no provider named '${input.providerId}'. Run /list-custom-providers to see your providers.`, models: [] };
+      }
+      return {
+        status: "ok",
+        message: "",
+        models: [...models.entries()].map(([modelId, draft]) => {
+          const fields = readModelFields(draft);
+          return {
+            id: modelId,
+            name: typeof draft.name === "string" && draft.name ? draft.name : modelId,
+            reasoning: fields.reasoning,
+            reasoningLabel: reasoningLabel(fields.reasoning),
+            image: fields.image,
+            context: fields.context,
+            output: fields.output
+          };
+        }).sort((a, b) => a.id.localeCompare(b.id))
+      };
+    },
+    editModel: async (input) => {
+      const models = discovered.get(input.providerId);
+      if (!models) {
+        return { status: "unknown_provider", message: `There is no provider named '${input.providerId}'. Run /list-custom-providers to see your providers.` };
+      }
+      const draft = models.get(input.modelId);
+      if (!draft) {
+        return { status: "unknown_model", message: `Provider '${input.providerId}' has no model named '${input.modelId}'. Run /edit-provider to check its models.` };
+      }
+      if (input.reasoning !== void 0 && !REASONING_LEVELS.includes(input.reasoning)) {
+        return { status: "invalid", message: `'${input.reasoning}' is not a reasoning level. Pick one from the list.` };
+      }
+      const current = readModelFields(draft);
+      const next = {
+        image: input.image ?? current.image,
+        reasoning: input.reasoning ?? current.reasoning,
+        context: input.context ?? current.context,
+        output: input.output ?? current.output
+      };
+      applyModelFields(draft, next);
+      models.set(input.modelId, draft);
+      await persist();
+      await ctx.provider.reload();
+      const saved = readModelFields(draft);
+      return {
+        status: "ok",
+        message: `Saved '${input.modelId}': reasoning ${reasoningLabel(saved.reasoning)}, image input ${saved.image ? "on" : "off"}, context ${saved.context ?? "unset"}, longest reply ${saved.output ?? "unset"}.`
+      };
+    },
     remove: async (providerId) => {
       const wasManaged = managed.delete(providerId);
       if (!wasManaged && !candidates.has(providerId)) {
@@ -2365,6 +2513,64 @@ Technical detail: ${sanitizeErrorMessage(error)}`);
           },
           output: MESSAGE_OUTPUT
         },
+        listModels: {
+          input: {
+            type: "object",
+            properties: { providerId: { type: "string" } },
+            required: ["providerId"],
+            additionalProperties: false
+          },
+          output: {
+            type: "object",
+            properties: {
+              status: { type: "string", enum: ["ok", "unknown_provider"] },
+              message: { type: "string" },
+              models: {
+                type: "array",
+                items: {
+                  type: "object",
+                  properties: {
+                    id: { type: "string" },
+                    name: { type: "string" },
+                    reasoning: { type: "string" },
+                    reasoningLabel: { type: "string" },
+                    image: { type: "boolean" },
+                    context: { type: "number" },
+                    output: { type: "number" }
+                  },
+                  required: ["id", "name", "reasoning", "reasoningLabel", "image"],
+                  additionalProperties: false
+                }
+              }
+            },
+            required: ["status", "message", "models"],
+            additionalProperties: false
+          }
+        },
+        editModel: {
+          input: {
+            type: "object",
+            properties: {
+              providerId: { type: "string" },
+              modelId: { type: "string" },
+              image: { type: "boolean" },
+              reasoning: { type: "string", enum: ["off", "minimal", "low", "medium", "high", "xhigh", "max"] },
+              context: { type: "number" },
+              output: { type: "number" }
+            },
+            required: ["providerId", "modelId"],
+            additionalProperties: false
+          },
+          output: {
+            type: "object",
+            properties: {
+              status: { type: "string", enum: ["ok", "unknown_provider", "unknown_model", "invalid"] },
+              message: { type: "string" }
+            },
+            required: ["status", "message"],
+            additionalProperties: false
+          }
+        },
         remove: {
           input: {
             type: "object",
@@ -2443,6 +2649,8 @@ Technical detail: ${sanitizeErrorMessage(error)}`);
       add: (input) => ops.add(input),
       manualAdd: (input) => ops.manualAdd(input),
       edit: (input) => ops.edit(input),
+      listModels: (input) => ops.listModels(input),
+      editModel: (input) => ops.editModel(input),
       remove: (input) => ops.remove(input.providerId),
       reprobe: (input) => ops.reprobe(input.providerId),
       apply: (input) => ops.apply(input),

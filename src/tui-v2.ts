@@ -1,4 +1,5 @@
 import { FLAVORS, collisionSuggestion } from "./flavors.js"
+import { parseTokenEdit, REASONING_LEVELS, reasoningLabel, resolveTokenEdit, type TokenEdit } from "./model-fields.js"
 import { isValidUrl } from "./security.js"
 import { id as pluginId } from "./ids.js"
 import type { AddProviderResult, ManualAddResult, ProviderRow, SiteRow } from "./server-v2.js"
@@ -101,6 +102,117 @@ function statusSuffix(provider: ProviderRow): string {
 
 function cancelled(ctx: V2TuiContext): void {
   ctx.ui.toast.show({ title: "Custom providers", message: "Cancelled. Nothing was changed.", variant: "info" })
+}
+
+interface ModelRow {
+  id: string
+  name: string
+  reasoning: string
+  reasoningLabel: string
+  image: boolean
+  context?: number
+  output?: number
+}
+
+/** Prompts for a token count until it parses, or the user backs out. Returns the
+ * edit rather than a number, because a kept value and a cancellation are both
+ * undefined once resolved, and the caller has to tell those apart. */
+async function askToken(ctx: V2TuiContext, title: string, current: number | undefined): Promise<TokenEdit | undefined> {
+  const placeholder = current === undefined ? "e.g. 128000 (blank = leave unset)" : `current: ${current} (blank = keep, 0 = clear)`
+  for (;;) {
+    const raw = await ctx.ui.dialog.prompt({ title, placeholder })
+    if (raw === undefined) return undefined
+    const edit = parseTokenEdit(raw)
+    if (edit === null) {
+      ctx.ui.toast.show({ message: "Enter a whole number of tokens, or 0 to clear it.", variant: "warning" })
+      continue
+    }
+    return edit
+  }
+}
+
+async function editOneModel(ctx: V2TuiContext, providerId: string, model: ModelRow): Promise<void> {
+  const reasoning = await ctx.ui.dialog.select({
+    title: `Thinking level for ${model.id}`,
+    options: REASONING_LEVELS.map(level => ({
+      title: reasoningLabel(level),
+      value: level,
+      description: level === model.reasoning ? "Currently set" : undefined,
+    })),
+  })
+  if (reasoning === undefined) {
+    cancelled(ctx)
+    return
+  }
+  const image = await ctx.ui.dialog.select({
+    title: `Can ${model.id} read images?`,
+    options: [
+      { title: "Yes", value: "yes", description: "Sends text and images" },
+      { title: "No", value: "no", description: "Sends text only" },
+    ],
+  })
+  if (image === undefined) {
+    cancelled(ctx)
+    return
+  }
+  const contextEdit = await askToken(ctx, `Context window for ${model.id}`, model.context)
+  if (contextEdit === undefined) {
+    cancelled(ctx)
+    return
+  }
+  const outputEdit = await askToken(ctx, `Longest reply for ${model.id}`, model.output)
+  if (outputEdit === undefined) {
+    cancelled(ctx)
+    return
+  }
+  const context = resolveTokenEdit(model.context, contextEdit)
+  const output = resolveTokenEdit(model.output, outputEdit)
+  const { message } = await call<{ message: string }>(ctx, "editModel", {
+    providerId,
+    modelId: model.id,
+    reasoning,
+    image: image === "yes",
+    context,
+    output,
+  })
+  await ctx.ui.dialog.alert({ title: `Edit ${model.id}`, message })
+}
+
+async function wizardEditModels(ctx: V2TuiContext, providerId: string): Promise<void> {
+  const { models, status, message } = await call<{ models: ModelRow[]; status: string; message: string }>(ctx, "listModels", { providerId })
+  if (status !== "ok") {
+    fail(ctx, message)
+    return
+  }
+  if (models.length === 0) {
+    ctx.ui.toast.show({
+      message: `'${providerId}' has no models yet. Fix its address and key with /edit-provider, then run /reload-models.`,
+      variant: "warning",
+    })
+    return
+  }
+  for (;;) {
+    const picked = await ctx.ui.dialog.select({
+      title: `Which model of ${providerId}?`,
+      options: [
+        ...models.map(model => ({
+          title: model.name === model.id ? model.id : `${model.name} (${model.id})`,
+          value: model.id,
+          description: `${model.reasoningLabel}; images ${model.image ? "yes" : "no"}; context ${model.context ?? "unset"}; longest reply ${model.output ?? "unset"}`,
+        })),
+        { title: "Done", value: "", description: "Go back" },
+      ],
+    })
+    if (!picked) {
+      cancelled(ctx)
+      return
+    }
+    if (picked === "") return
+    const model = models.find(item => item.id === picked)
+    if (model) await editOneModel(ctx, providerId, model)
+    const again = await call<{ models?: ModelRow[] }>(ctx, "listModels", { providerId })
+    models.splice(0, models.length, ...(again?.models ?? []))
+  }
 }
 
 async function pickProvider(ctx: V2TuiContext): Promise<ProviderRow | undefined> {
@@ -427,10 +539,15 @@ async function wizardEdit(ctx: V2TuiContext): Promise<void> {
       { title: "API type", value: "flavor", description: `Currently: ${flavorLabel}` },
       { title: "How models are listed", value: "displayStyle", description: `Currently: ${styleLabel}` },
       { title: "API key", value: "apiKey", description: "Replace the saved key" },
+      { title: "A model's settings", value: "model", description: "Change thinking, image input, or token limits" },
     ],
   })
   if (!field) {
     cancelled(ctx)
+    return
+  }
+  if (field === "model") {
+    await wizardEditModels(ctx, provider.id)
     return
   }
   let value: string | undefined

@@ -11,6 +11,7 @@ import {
 } from "./probe.js"
 import { getCatalog, listCatalogSites } from "./catalog.js"
 import { mergeDiscoveredIntoStored, probedToDraft, type V2ModelDraft } from "./v2-models.js"
+import { applyModelFields, readModelFields, REASONING_LEVELS, reasoningLabel, type ReasoningLevel } from "./model-fields.js"
 import { diffModels } from "./reconcile.js"
 import type { DisplayStyle, EnrichedModel } from "./enrich.js"
 
@@ -125,6 +126,22 @@ export interface ProviderRow {
   displayStyle: string
   models: number
   pending: number
+}
+
+export interface ModelRow {
+  id: string
+  name: string
+  reasoning: string
+  reasoningLabel: string
+  image: boolean
+  context?: number
+  output?: number
+}
+
+export interface ListModelsResult {
+  status: "ok" | "unknown_provider"
+  message: string
+  models: ModelRow[]
 }
 
 export interface SiteRow {
@@ -823,6 +840,68 @@ export const setup = async (ctx: V2Context): Promise<void> => {
       }
     },
 
+    listModels: async (input: { providerId: string }): Promise<ListModelsResult> => {
+      const models = discovered.get(input.providerId)
+      if (!models) {
+        return { status: "unknown_provider", message: `There is no provider named '${input.providerId}'. Run /list-custom-providers to see your providers.`, models: [] }
+      }
+      return {
+        status: "ok",
+        message: "",
+        models: [...models.entries()]
+          .map(([modelId, draft]) => {
+            const fields = readModelFields(draft)
+            return {
+              id: modelId,
+              name: typeof draft.name === "string" && draft.name ? draft.name : modelId,
+              reasoning: fields.reasoning,
+              reasoningLabel: reasoningLabel(fields.reasoning),
+              image: fields.image,
+              context: fields.context,
+              output: fields.output,
+            }
+          })
+          .sort((a, b) => a.id.localeCompare(b.id)),
+      }
+    },
+
+    editModel: async (input: {
+      providerId: string
+      modelId: string
+      image?: boolean
+      reasoning?: string
+      context?: number
+      output?: number
+    }): Promise<{ status: "ok" | "unknown_provider" | "unknown_model" | "invalid"; message: string }> => {
+      const models = discovered.get(input.providerId)
+      if (!models) {
+        return { status: "unknown_provider", message: `There is no provider named '${input.providerId}'. Run /list-custom-providers to see your providers.` }
+      }
+      const draft = models.get(input.modelId)
+      if (!draft) {
+        return { status: "unknown_model", message: `Provider '${input.providerId}' has no model named '${input.modelId}'. Run /edit-provider to check its models.` }
+      }
+      if (input.reasoning !== undefined && !(REASONING_LEVELS as readonly string[]).includes(input.reasoning)) {
+        return { status: "invalid", message: `'${input.reasoning}' is not a reasoning level. Pick one from the list.` }
+      }
+      const current = readModelFields(draft)
+      const next = {
+        image: input.image ?? current.image,
+        reasoning: (input.reasoning as ReasoningLevel | undefined) ?? current.reasoning,
+        context: input.context ?? current.context,
+        output: input.output ?? current.output,
+      }
+      applyModelFields(draft, next)
+      models.set(input.modelId, draft)
+      await persist()
+      await ctx.provider.reload()
+      const saved = readModelFields(draft)
+      return {
+        status: "ok",
+        message: `Saved '${input.modelId}': reasoning ${reasoningLabel(saved.reasoning)}, image input ${saved.image ? "on" : "off"}, context ${saved.context ?? "unset"}, longest reply ${saved.output ?? "unset"}.`,
+      }
+    },
+
     remove: async (providerId: string): Promise<{ message: string }> => {
       const wasManaged = managed.delete(providerId)
       if (!wasManaged && !candidates.has(providerId)) {
@@ -1117,6 +1196,64 @@ export const setup = async (ctx: V2Context): Promise<void> => {
           },
           output: MESSAGE_OUTPUT,
         },
+        listModels: {
+          input: {
+            type: "object",
+            properties: { providerId: { type: "string" } },
+            required: ["providerId"],
+            additionalProperties: false,
+          },
+          output: {
+            type: "object",
+            properties: {
+              status: { type: "string", enum: ["ok", "unknown_provider"] },
+              message: { type: "string" },
+              models: {
+                type: "array",
+                items: {
+                  type: "object",
+                  properties: {
+                    id: { type: "string" },
+                    name: { type: "string" },
+                    reasoning: { type: "string" },
+                    reasoningLabel: { type: "string" },
+                    image: { type: "boolean" },
+                    context: { type: "number" },
+                    output: { type: "number" },
+                  },
+                  required: ["id", "name", "reasoning", "reasoningLabel", "image"],
+                  additionalProperties: false,
+                },
+              },
+            },
+            required: ["status", "message", "models"],
+            additionalProperties: false,
+          },
+        },
+        editModel: {
+          input: {
+            type: "object",
+            properties: {
+              providerId: { type: "string" },
+              modelId: { type: "string" },
+              image: { type: "boolean" },
+              reasoning: { type: "string", enum: ["off", "minimal", "low", "medium", "high", "xhigh", "max"] },
+              context: { type: "number" },
+              output: { type: "number" },
+            },
+            required: ["providerId", "modelId"],
+            additionalProperties: false,
+          },
+          output: {
+            type: "object",
+            properties: {
+              status: { type: "string", enum: ["ok", "unknown_provider", "unknown_model", "invalid"] },
+              message: { type: "string" },
+            },
+            required: ["status", "message"],
+            additionalProperties: false,
+          },
+        },
         remove: {
           input: {
             type: "object",
@@ -1195,6 +1332,8 @@ export const setup = async (ctx: V2Context): Promise<void> => {
       add: input => ops.add(input as Parameters<typeof ops.add>[0]),
       manualAdd: input => ops.manualAdd(input as Parameters<typeof ops.manualAdd>[0]),
       edit: input => ops.edit(input as Parameters<typeof ops.edit>[0]),
+      listModels: input => ops.listModels(input as Parameters<typeof ops.listModels>[0]),
+      editModel: input => ops.editModel(input as Parameters<typeof ops.editModel>[0]),
       remove: input => ops.remove((input as { providerId: string }).providerId),
       reprobe: input => ops.reprobe((input as { providerId: string }).providerId),
       apply: input => ops.apply(input as { providerId: string; decisions: string }),
