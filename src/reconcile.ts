@@ -78,6 +78,9 @@ export function diffModels(
   const changes: ModelChange[] = []
   const seen = new Set<string>()
   for (const p of fresh) {
+    // An endpoint can list the same id twice. Without this, the user was asked the same
+    // question twice and only their last answer reached the decision map.
+    if (seen.has(p.id)) continue
     seen.add(p.id)
     const stored = current[p.id]
     if (!stored) {

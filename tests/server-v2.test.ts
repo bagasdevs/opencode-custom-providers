@@ -15,9 +15,28 @@ function makeContext() {
   const handlers: Record<string, Handler> = {}
   const stored: unknown[] = []
   const keys: Array<{ integrationID: string; key: string }> = []
+  // The real editor keeps records across reloads, and the diff in reprobe is built from
+  // what a replayed transform sees, so the fake must remember providers and models too.
+  const records = new Map<
+    string,
+    {
+      provider: {
+        id: string
+        name: string
+        activation: "auto" | "enabled" | "disabled"
+        package?: string
+        integrationID?: string
+        settings?: Record<string, unknown>
+      }
+      models: Map<string, Record<string, unknown>>
+    }
+  >()
   const providerEditor = {
-    list: () => [],
-    get: () => undefined,
+    list: () => [...records.values()].map(record => ({ provider: record.provider, models: record.models })),
+    get: (providerID: string) => {
+      const record = records.get(providerID)
+      return record ? { provider: record.provider, models: record.models } : undefined
+    },
     update: (
       providerID: string,
       update: (provider: {
@@ -28,10 +47,25 @@ function makeContext() {
         integrationID?: string
         settings?: Record<string, unknown>
       }) => void,
-    ) => update({ id: providerID, name: providerID, activation: "enabled" as const }),
+    ) => {
+      let record = records.get(providerID)
+      if (!record) {
+        record = { provider: { id: providerID, name: providerID, activation: "enabled" as const }, models: new Map() }
+        records.set(providerID, record)
+      }
+      update(record.provider)
+    },
     models: {
-      update: (_providerID: string, _modelID: string, update: (model: Record<string, unknown>) => void) => update({}),
-      remove: () => undefined,
+      update: (_providerID: string, modelID: string, update: (model: Record<string, unknown>) => void) => {
+        const record = records.get(_providerID)
+        if (!record) return
+        const draft = record.models.get(modelID) ?? {}
+        update(draft)
+        record.models.set(modelID, draft)
+      },
+      remove: (providerID: string, modelID: string) => {
+        records.get(providerID)?.models.delete(modelID)
+      },
     },
   }
   const integrationEditor = {
@@ -41,8 +75,15 @@ function makeContext() {
   }
   const context: V2Context = {
     provider: {
-      transform: async callback => callback(providerEditor),
-      reload: async () => undefined,
+      // The host replays transforms on every reload, and reprobe resolves candidates
+      // that only exist after one replays, so reload must actually re-run it.
+      transform: async callback => {
+        lastTransform = callback
+        await callback(providerEditor)
+      },
+      reload: async () => {
+        if (lastTransform) await lastTransform(providerEditor)
+      },
     },
     integration: {
       transform: async callback => callback(integrationEditor),
@@ -76,7 +117,7 @@ function makeContext() {
       },
     },
   }
-  return { context, handlers, keys, stored }
+  return { context, handlers, keys, stored, records }
 }
 
 async function registeredHandlers() {
@@ -84,6 +125,8 @@ async function registeredHandlers() {
   await setup(state.context)
   return state
 }
+
+let lastTransform: ((providers: Parameters<Parameters<typeof setup>[0]["provider"]["transform"]>[0]) => void | Promise<void>) | undefined
 
 beforeEach(() => {
   clearModelsDevCache()
@@ -212,6 +255,161 @@ describe("v2 rpc wiring", () => {
     expect(missing).toMatchObject({ status: "unknown_provider" })
     const noModel = await handlers["editModel"]?.({ providerId: "nope", modelId: "x" })
     expect(noModel).toMatchObject({ status: "unknown_provider" })
+  })
+})
+
+describe("v2 reprobe", () => {
+  // The per-model change picker is built on this array, not on the prose (whose preview
+  // caps at five lines), so the structured payload must survive alongside the message.
+  async function seedProvider() {
+    vi.stubGlobal("fetch", async (input: unknown) => {
+      if (String(input).includes("models.dev")) return new Response("{}", { status: 200 })
+      return new Response(JSON.stringify({ data: [{ id: "model-a" }, { id: "model-b" }] }), { status: 200 })
+    })
+    const state = await registeredHandlers()
+    const add = state.handlers["add"]
+    if (!add) throw new Error("add RPC was not registered")
+    const added = await add({ providerId: "my-proxy", baseURL: "https://provider.example/v1", apiKey: "test-key" })
+    if ((added as { status: string }).status !== "ok") throw new Error("seed provider was not added")
+    return state
+  }
+
+  it("reports an added model in the structured changes list", async () => {
+    const { handlers } = await seedProvider()
+    vi.stubGlobal("fetch", async (input: unknown) => {
+      if (String(input).includes("models.dev")) return new Response("{}", { status: 200 })
+      return new Response(JSON.stringify({ data: [{ id: "model-a" }, { id: "model-b" }, { id: "model-c" }] }), { status: 200 })
+    })
+    const result = (await handlers["reprobe"]?.({ providerId: "my-proxy" })) as {
+      message: string
+      changes?: Array<{ id: string; kind: string; detail: string }>
+    }
+    expect(result.message).toContain("Found 3 model")
+    const added = result.changes?.find(change => change.id === "model-c")
+    expect(added).toBeDefined()
+    expect(added).toMatchObject({ id: "model-c", kind: "added" })
+    expect(typeof added?.detail).toBe("string")
+  })
+
+  it("reports a vanished model as removed and leaves changes off a failed probe", async () => {
+    const { handlers } = await seedProvider()
+    vi.stubGlobal("fetch", async (input: unknown) => {
+      if (String(input).includes("models.dev")) return new Response("{}", { status: 200 })
+      return new Response(JSON.stringify({ data: [{ id: "model-a" }] }), { status: 200 })
+    })
+    const shrunk = (await handlers["reprobe"]?.({ providerId: "my-proxy" })) as {
+      changes?: Array<{ id: string; kind: string }>
+    }
+    expect(shrunk.changes).toEqual(expect.arrayContaining([expect.objectContaining({ id: "model-b", kind: "removed" })]))
+
+    // An endpoint that stops answering must not produce a change list at all.
+    vi.stubGlobal("fetch", async () => new Response("connection refused", { status: 503 }))
+    const failed = (await handlers["reprobe"]?.({ providerId: "my-proxy" })) as { changes?: unknown }
+    expect(failed.changes).toBeUndefined()
+  })
+
+  it("omits changes when the provider is unknown", async () => {
+    const { handlers } = await registeredHandlers()
+    const result = (await handlers["reprobe"]?.({ providerId: "nope" })) as { changes?: unknown }
+    expect(result.message).toContain("no provider")
+    expect(result.changes).toBeUndefined()
+  })
+})
+
+describe("adding over an existing provider", () => {
+  // add and manualAdd used to replace a tuned provider unconditionally. A second TUI
+  // window or an agent tool call could therefore wipe a model list with no confirmation,
+  // which is the one thing the built-in and duplicate-address guards do not cover.
+  async function seed() {
+    vi.stubGlobal("fetch", async (input: unknown) => {
+      if (String(input).includes("models.dev")) return new Response("{}", { status: 200 })
+      return new Response(JSON.stringify({ data: [{ id: "model-a" }] }), { status: 200 })
+    })
+    const state = await registeredHandlers()
+    const add = state.handlers["add"]
+    if (!add) throw new Error("add RPC was not registered")
+    const first = await add({ providerId: "my-proxy", baseURL: "https://provider.example/v1", apiKey: "test-key" })
+    if ((first as { status: string }).status !== "ok") throw new Error("seed provider was not added")
+    return { state, add }
+  }
+
+  it("refuses to replace an existing provider unless confirmReplace is set", async () => {
+    const { add } = await seed()
+    const again = (await add({ providerId: "my-proxy", baseURL: "https://other.example/v1", apiKey: "test-key" })) as {
+      status: string
+      message: string
+    }
+    expect(again.status).toBe("confirm_replace")
+    expect(again.message).toContain("already one of your providers")
+  })
+
+  it("replaces it once confirmReplace is set", async () => {
+    const { add } = await seed()
+    const again = (await add({
+      providerId: "my-proxy",
+      baseURL: "https://other.example/v1",
+      apiKey: "test-key",
+      confirmReplace: true,
+    })) as { status: string }
+    expect(again.status).toBe("ok")
+  })
+
+  it("overwrite does not stand in for confirmReplace", async () => {
+    // overwrite gates the built-in clash only. If it also opened this door, a caller
+    // that merely wanted to extend a built-in could clobber its own provider instead.
+    const { add } = await seed()
+    const again = (await add({
+      providerId: "my-proxy",
+      baseURL: "https://other.example/v1",
+      apiKey: "test-key",
+      overwrite: true,
+    })) as { status: string }
+    expect(again.status).toBe("confirm_replace")
+  })
+
+  it("refuses when the provider exists only as a host record", async () => {
+    // A provider this plugin did not create (an old-format entry, or one written by hand)
+    // lives in `candidates` but never in `managed`. Guarding on `managed` alone left that
+    // one silently replaceable, which is the very thing the guard exists to stop.
+    const state = await registeredHandlers()
+    // A host record with dynamic: true is what candidateFrom accepts as a provider this
+    // plugin did not create. Seeded directly so the plugin's own transform stays intact:
+    // calling transform() here would replace it and candidates would never be filled.
+    state.records.set("legacy-proxy", {
+      provider: {
+        id: "legacy-proxy",
+        name: "legacy-proxy",
+        activation: "enabled",
+        package: "@opencode/ai/providers/openai-compatible",
+        settings: { baseURL: "https://legacy.example/v1", dynamic: true },
+      },
+      models: new Map(),
+    })
+    await state.context.provider.reload()
+    const add = state.handlers["add"]
+    if (!add) throw new Error("add RPC was not registered")
+    const again = (await add({ providerId: "legacy-proxy", baseURL: "https://other.example/v1", apiKey: "k" })) as {
+      status: string
+    }
+    expect(again.status).toBe("confirm_replace")
+  })
+  it("refuses through catalog.add too", async () => {
+    // The third write path. It had no guard while add and manualAdd did, so it was the
+    // one way left to replace a tuned provider without being asked.
+    const { state } = await seed()
+    const catalogAdd = state.handlers["catalog.add"]
+    if (!catalogAdd) throw new Error("catalog.add RPC was not registered")
+    const again = (await catalogAdd({ site: "openrouter", providerId: "my-proxy" })) as { message: string }
+    expect(again.message).toContain("already one of your providers")
+  })
+  it("refuses through manualAdd too", async () => {
+    const { state } = await seed()
+    const manualAdd = state.handlers["manualAdd"]
+    if (!manualAdd) throw new Error("manualAdd RPC was not registered")
+    const again = (await manualAdd({ providerId: "my-proxy", baseURL: "https://other.example/v1", modelIds: "model-a" })) as {
+      status: string
+    }
+    expect(again.status).toBe("confirm_replace")
   })
 })
 

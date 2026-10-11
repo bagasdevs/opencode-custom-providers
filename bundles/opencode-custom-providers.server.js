@@ -1176,6 +1176,7 @@ function diffModels(current, fresh, displayStyle) {
   const changes = [];
   const seen = /* @__PURE__ */ new Set();
   for (const p of fresh) {
+    if (seen.has(p.id)) continue;
     seen.add(p.id);
     const stored = current[p.id];
     if (!stored) {
@@ -1398,9 +1399,25 @@ function renameProviderEntry(providers, oldId, newId) {
   if (clean !== oldId && providers[clean]) {
     return { error: `A provider with ID '${clean}' already exists.` };
   }
-  delete providers[oldId];
   entry.name = clean;
-  providers[clean] = entry;
+  const originalKeys = Object.keys(providers);
+  const rebuilt = {};
+  for (const key of originalKeys) {
+    const value = key === oldId ? entry : providers[key];
+    const target = key === oldId ? clean : key;
+    Object.defineProperty(rebuilt, target, { value, enumerable: true, writable: true, configurable: true });
+  }
+  for (const key of originalKeys) {
+    delete providers[key];
+  }
+  for (const key of Object.keys(rebuilt)) {
+    Object.defineProperty(providers, key, {
+      value: rebuilt[key],
+      enumerable: true,
+      writable: true,
+      configurable: true
+    });
+  }
   const suggestion = collisionSuggestion(clean);
   if (suggestion && suggestion !== clean) {
     return {
@@ -1650,7 +1667,7 @@ var MESSAGE_OUTPUT = {
 var ADD_OUTPUT = {
   type: "object",
   properties: {
-    status: { type: "string", enum: ["ok", "invalid", "unreachable", "manual_required", "confirm_endpoint_reuse"] },
+    status: { type: "string", enum: ["ok", "invalid", "unreachable", "manual_required", "confirm_replace", "confirm_endpoint_reuse"] },
     message: { type: "string" },
     detail: { type: "string" },
     usedBy: { type: "array", items: { type: "string" } }
@@ -1898,8 +1915,8 @@ var setup = async (ctx) => {
   };
   const discover = async (candidate) => {
     const apiKey = candidate.overrideKey ?? await credentialKey(candidate.providerId) ?? candidate.apiKey;
-    const fresh = await probeEndpoint(candidate.baseURL, apiKey, candidate.flavor);
-    return fresh.map((item) => ({ ...item, id: sanitizeModelId(item.id) }));
+    const outcome = await probeEndpointOutcome(candidate.baseURL, apiKey, candidate.flavor);
+    return { ...outcome, models: outcome.models.map((item) => ({ ...item, id: sanitizeModelId(item.id) })) };
   };
   const registerIntegration = async (providerId) => {
     await ctx.integration.transform((integrations) => {
@@ -1917,11 +1934,13 @@ var setup = async (ctx) => {
     });
     await ctx.integration.reload();
   };
-  const applyModels = async (providerId, fresh, displayStyle) => {
+  const applyModels = async (providerId, fresh, baseURL, displayStyle) => {
     const models = modelsFor(providerId);
     for (const probed of fresh) models.set(probed.id, probedToDraftKeepingEdits(models.get(probed.id), probed, displayStyle));
+    const entry = managed.get(providerId);
+    if (entry) entry.baseURL = baseURL;
     await persist();
-    await ctx.provider.reload();
+    await reloadQuietly();
   };
   const refresh = async (only) => {
     const outcome = { checked: 0, updated: [], unchanged: [], empty: [], failed: [] };
@@ -1936,22 +1955,23 @@ var setup = async (ctx) => {
         outcome.failed.push(candidate.providerId);
         continue;
       }
-      lastProbe.set(candidate.providerId, fresh.length);
-      lastProbeModels.set(candidate.providerId, fresh);
-      if (fresh.length === 0) {
+      lastProbe.set(candidate.providerId, fresh.models.length);
+      lastProbeModels.set(candidate.providerId, fresh.models);
+      if (fresh.models.length === 0) {
         outcome.empty.push(candidate.providerId);
         continue;
       }
       const models = modelsFor(candidate.providerId);
       const before = fingerprint(models);
-      for (const probed of fresh) models.set(probed.id, probedToDraftKeepingEdits(models.get(probed.id), probed, candidate.displayStyle));
+      for (const probed of fresh.models) models.set(probed.id, probedToDraftKeepingEdits(models.get(probed.id), probed, candidate.displayStyle));
       if (fingerprint(models) === before) outcome.unchanged.push(candidate.providerId);
       else outcome.updated.push(candidate.providerId);
+      rememberAnsweredUrl(candidate, fresh);
       changed = true;
     }
     if (changed) {
       await persist();
-      await ctx.provider.reload();
+      await reloadQuietly();
     }
     return outcome;
   };
@@ -1969,9 +1989,22 @@ var setup = async (ctx) => {
     if (probed === void 0) return 0;
     return Math.max(0, probed - (discovered.get(providerId)?.size ?? 0));
   };
+  const reloadQuietly = async () => {
+    try {
+      await ctx.provider.reload();
+    } catch {
+    }
+  };
+  const rememberAnsweredUrl = (candidate, fresh) => {
+    if (fresh.baseURL === candidate.baseURL) return false;
+    candidate.baseURL = fresh.baseURL;
+    const entry = managed.get(candidate.providerId);
+    if (entry) entry.baseURL = fresh.baseURL;
+    return true;
+  };
   const ops = {
     list: async () => {
-      await ctx.provider.reload();
+      await reloadQuietly();
       const providers = [];
       for (const [providerId, candidate] of candidates) {
         providers.push({
@@ -2001,6 +2034,9 @@ var setup = async (ctx) => {
           message: `'${input.providerId}' is the name of a provider opencode already has, so adding it would change that provider.
 Use '${clash}' instead, or add the same provider again with overwrite=true if you really mean to replace it.`
         };
+      }
+      if ((managed.has(input.providerId) || candidates.has(input.providerId)) && !input.confirmReplace) {
+        return { status: "confirm_replace", message: `'${input.providerId}' is already one of your providers, so this would replace its settings and model list.` };
       }
       const reused = [...managed.entries()].filter(
         ([id2, entry]) => id2 !== input.providerId && entry.baseURL.replace(/\/+$/, "") === normalizeBaseUrl(input.baseURL)
@@ -2032,7 +2068,7 @@ ${probeHint(error)}`,
           detail: sanitizeErrorMessage(error)
         };
       }
-      if (fresh.length === 0) {
+      if (fresh.models.length === 0) {
         return {
           status: "manual_required",
           message: `The address ${candidate.baseURL} answered but listed no models. Nothing was saved; you can enter model names manually.`
@@ -2040,16 +2076,16 @@ ${probeHint(error)}`,
       }
       await clearRemoval(candidate.providerId);
       managed.set(candidate.providerId, {
-        baseURL: candidate.baseURL,
+        baseURL: fresh.baseURL,
         flavor: candidate.flavor,
         displayStyle: candidate.displayStyle
       });
       await registerIntegration(candidate.providerId);
-      await applyModels(candidate.providerId, fresh, candidate.displayStyle);
+      await applyModels(candidate.providerId, fresh.models, fresh.baseURL, candidate.displayStyle);
       const lines = [
-        `Done. '${candidate.providerId}' is ready with ${fresh.length} model${fresh.length === 1 ? "" : "s"}. Open the model picker and choose one to start using it.`,
-        `First model: ${fresh[0].id}`,
-        `Details: ${describeProbed(fresh[0])}`
+        `Done. '${candidate.providerId}' is ready with ${fresh.models.length} model${fresh.models.length === 1 ? "" : "s"}. Open the model picker and choose one to start using it.`,
+        `First model: ${fresh.models[0].id}`,
+        `Details: ${describeProbed(fresh.models[0])}`
       ];
       if (input.apiKey) {
         try {
@@ -2069,7 +2105,7 @@ Technical detail: ${sanitizeErrorMessage(error)}`
         );
       }
       if (!input.apiKey) {
-        lines[0] = `Saved '${candidate.providerId}' with ${fresh.length} model${fresh.length === 1 ? "" : "s"}, but it has no API key yet so it cannot sign in.`;
+        lines[0] = `Saved '${candidate.providerId}' with ${fresh.models.length} model${fresh.models.length === 1 ? "" : "s"}, but it has no API key yet so it cannot sign in.`;
       }
       return { status: "ok", message: lines.join("\n") };
     },
@@ -2087,6 +2123,9 @@ Technical detail: ${sanitizeErrorMessage(error)}`
           status: "invalid",
           message: `'${input.providerId}' is a built-in provider name. Use '${clash}' instead.`
         };
+      }
+      if ((managed.has(input.providerId) || candidates.has(input.providerId)) && !input.confirmReplace) {
+        return { status: "confirm_replace", message: `'${input.providerId}' is already one of your providers, so this would replace its settings and model list.` };
       }
       const modelIds = parseModelIds(input.modelIds);
       if (!modelIds?.length) {
@@ -2117,7 +2156,7 @@ Technical detail: ${sanitizeErrorMessage(error)}`
         displayStyle: candidate.displayStyle
       });
       await registerIntegration(candidate.providerId);
-      await applyModels(candidate.providerId, unique, displayStyle);
+      await applyModels(candidate.providerId, unique, candidate.baseURL, displayStyle);
       let keyMessage = "";
       if (input.apiKey) {
         try {
@@ -2176,9 +2215,9 @@ Technical detail: ${sanitizeErrorMessage(error)}`;
         };
         try {
           const fresh = await discover(candidate);
-          await applyModels(input.providerId, fresh, candidate.displayStyle);
+          await applyModels(input.providerId, fresh.models, fresh.baseURL, candidate.displayStyle);
         } catch (error) {
-          await ctx.provider.reload();
+          await reloadQuietly();
           return {
             message: `Saved. '${input.providerId}' now uses the new address, but it did not answer with a model list yet.
 ${probeHint(error)}
@@ -2190,7 +2229,7 @@ Technical detail: ${sanitizeErrorMessage(error)}`
       } else if (input.displayStyle !== void 0) {
         const raw2 = lastProbeModels.get(input.providerId);
         if (raw2) {
-          await applyModels(input.providerId, raw2, next.displayStyle ?? "slug");
+          await applyModels(input.providerId, raw2, next.baseURL, next.displayStyle ?? "slug");
         } else {
           const candidate = {
             providerId: input.providerId,
@@ -2199,7 +2238,8 @@ Technical detail: ${sanitizeErrorMessage(error)}`
             displayStyle: next.displayStyle ?? "slug"
           };
           try {
-            await applyModels(input.providerId, await discover(candidate), candidate.displayStyle);
+            const outcome = await discover(candidate);
+            await applyModels(input.providerId, outcome.models, outcome.baseURL, candidate.displayStyle);
           } catch (error) {
             return { message: `Saved the new name style, but the provider could not be re-read to apply it.
 ${probeHint(error)}
@@ -2207,9 +2247,9 @@ ${probeHint(error)}
 Technical detail: ${sanitizeErrorMessage(error)}` };
           }
         }
-        await ctx.provider.reload();
+        await reloadQuietly();
       } else {
-        await ctx.provider.reload();
+        await reloadQuietly();
       }
       const changed = [];
       if (input.baseURL !== void 0) changed.push("a new address");
@@ -2233,7 +2273,9 @@ Technical detail: ${sanitizeErrorMessage(error)}` };
           const fields = readModelFields(draft);
           const row = {
             id: modelId,
-            name: typeof draft.name === "string" && draft.name ? draft.name : modelId,
+            // Endpoint-provided, so it can carry control characters that break a host
+            // widget's key handling when shown in a dialog title (see sanitizeDialogText).
+            name: sanitizeDialogText(typeof draft.name === "string" && draft.name ? draft.name : modelId),
             reasoning: fields.reasoning,
             reasoningLabel: reasoningLabel(fields.reasoning),
             image: fields.image
@@ -2274,7 +2316,7 @@ Technical detail: ${sanitizeErrorMessage(error)}` };
       applyModelFields(draft, next);
       models.set(input.modelId, draft);
       await persist();
-      await ctx.provider.reload();
+      await reloadQuietly();
       const saved = readModelFields(draft);
       return {
         status: "ok",
@@ -2307,7 +2349,7 @@ Remove its entry from your opencode config to stop using it, or use /edit-provid
         for (const modelId of staleModels) providers.models.remove(providerId, modelId);
       });
       discovered.delete(providerId);
-      await ctx.provider.reload();
+      await reloadQuietly();
       return {
         message: `Removed '${providerId}' and its ${staleModels.length} model${staleModels.length === 1 ? "" : "s"}. Your other opencode settings are not touched. You can add it again later with /add-provider.`
       };
@@ -2324,22 +2366,26 @@ ${probeHint(error)}
 
 Technical detail: ${sanitizeErrorMessage(error)}` };
       }
-      lastProbe.set(providerId, fresh.length);
-      lastProbeModels.set(providerId, fresh);
+      lastProbe.set(providerId, fresh.models.length);
+      lastProbeModels.set(providerId, fresh.models);
+      if (rememberAnsweredUrl(candidate, fresh)) {
+        await persist();
+        await reloadQuietly();
+      }
       const stored = [...storedIds.get(providerId) ?? []];
-      if (fresh.length === 0) {
+      if (fresh.models.length === 0) {
         return { message: `The provider listed no models.
 ${zeroModelsHint(Boolean(await credentialKey(providerId) ?? candidate.apiKey))}
 
 Stored models were kept, so nothing broke.` };
       }
       const current = Object.fromEntries(storedModels.get(providerId) ?? /* @__PURE__ */ new Map());
-      const changes = diffModels(current, fresh, candidate.displayStyle);
+      const changes = diffModels(current, fresh.models, candidate.displayStyle);
       const added = changes.filter((change) => change.kind === "added");
       const updated = changes.filter((change) => change.kind === "updated");
       const vanished = changes.filter((change) => change.kind === "removed");
       const lines = [
-        changes.length === 0 ? `Up to date: the provider still lists the same ${fresh.length} model${fresh.length === 1 ? "" : "s"}. Nothing to do.` : `Found ${fresh.length} model${fresh.length === 1 ? "" : "s"} at the provider (you had ${stored.length}).`
+        changes.length === 0 ? `Up to date: the provider still lists the same ${fresh.models.length} model${fresh.models.length === 1 ? "" : "s"}. Nothing to do.` : `Found ${fresh.models.length} model${fresh.models.length === 1 ? "" : "s"} at the provider (you had ${stored.length}).`
       ];
       const PREVIEW = 5;
       for (const change of added.slice(0, PREVIEW)) lines.push(`  + new: ${change.id}`);
@@ -2352,7 +2398,7 @@ Stored models were kept, so nothing broke.` };
         lines.push("");
         lines.push('Nothing has changed yet. Run "Reload all models" to apply everything, or "Review model changes" to choose.');
       }
-      return { message: lines.join("\n") };
+      return { message: lines.join("\n"), changes: changes.map((change) => ({ id: change.id, kind: change.kind, detail: change.detail })) };
     },
     apply: async (input) => {
       const candidate = candidates.get(input.providerId);
@@ -2385,21 +2431,25 @@ ${probeHint(error)}
 
 Technical detail: ${sanitizeErrorMessage(error)}` };
       }
+      if (rememberAnsweredUrl(candidate, fresh)) {
+        await persist();
+        await reloadQuietly();
+      }
       if (keepOnly) {
         return { message: `Kept your ${storedIds.get(input.providerId)?.size ?? 0} stored model(s) for '${input.providerId}'. Nothing was changed.` };
       }
       const models = modelsFor(input.providerId);
       const stored = new Set(models.keys());
-      const freshIds = new Set(fresh.map((item) => item.id));
+      const freshIds = new Set(fresh.models.map((item) => item.id));
       let removed2 = 0;
-      for (const probed of fresh) {
+      for (const probed of fresh.models) {
         const decision = decisions[probed.id] ?? (stored.has(probed.id) ? "keep" : "apply");
         if (decision === "remove") {
           models.delete(probed.id);
           removed2++;
           continue;
         }
-        if (decision === "keep" && stored.has(probed.id)) continue;
+        if (decision === "keep") continue;
         models.set(probed.id, probedToDraft(probed, candidate.displayStyle));
       }
       for (const modelId of stored) {
@@ -2409,14 +2459,14 @@ Technical detail: ${sanitizeErrorMessage(error)}` };
         removed2++;
       }
       await persist();
-      await ctx.provider.reload();
+      await reloadQuietly();
       const total = [...models.values()].length;
       return {
         message: `Done. '${input.providerId}' now has ${total} model${total === 1 ? "" : "s"} from the provider` + (removed2 > 0 ? `, and ${removed2} old one(s) were removed.` : ".") + "\nOpen the model picker and choose one to start using it."
       };
     },
     refresh: async () => {
-      await ctx.provider.reload();
+      await reloadQuietly();
       const outcome = await refresh();
       const lines = [`Checked ${outcome.checked} provider(s).`];
       if (outcome.updated.length > 0) lines.push(`Updated: ${outcome.updated.join(", ")}.`);
@@ -2446,6 +2496,9 @@ Fix with /edit-provider (check the address and the API key), then run /reload-mo
           message: `'${input.providerId}' is the id of a built-in provider, so adding it here would take it over. Use a different name, for example '${clash}'.`
         };
       }
+      if ((managed.has(input.providerId) || candidates.has(input.providerId)) && !input.confirmReplace) {
+        return { message: `'${input.providerId}' is already one of your providers, so this would replace its settings and model list.` };
+      }
       const catalog = await getCatalog();
       const site = catalog[input.site];
       if (!site) return { message: `'${input.site}' is not in the catalog list. Pick one from the list.` };
@@ -2463,6 +2516,7 @@ Fix with /edit-provider (check the address and the API key), then run /reload-mo
       await applyModels(
         input.providerId,
         chosen.map((modelId) => catalogToProbed(site.models[modelId])),
+        site.api,
         displayStyle
       );
       const lines = [`Done. '${input.providerId}' is ready with ${chosen.length} model${chosen.length === 1 ? "" : "s"} from '${input.site}'.`];
@@ -2521,7 +2575,8 @@ Technical detail: ${sanitizeErrorMessage(error)}`);
               flavor: { type: "string" },
               displayStyle: { type: "string", enum: ["slug", "name"] },
               overwrite: { type: "boolean" },
-              confirmReuse: { type: "boolean" }
+              confirmReuse: { type: "boolean" },
+              confirmReplace: { type: "boolean", description: "Replace an existing provider of the same name." }
             },
             required: ["providerId", "baseURL"],
             additionalProperties: false
@@ -2538,7 +2593,8 @@ Technical detail: ${sanitizeErrorMessage(error)}`);
               apiKey: { type: "string" },
               flavor: { type: "string" },
               displayStyle: { type: "string", enum: ["slug", "name"] },
-              overwrite: { type: "boolean" }
+              overwrite: { type: "boolean" },
+              confirmReplace: { type: "boolean", description: "Replace an existing provider of the same name." }
             },
             required: ["providerId", "baseURL", "modelIds"],
             additionalProperties: false
@@ -2634,7 +2690,27 @@ Technical detail: ${sanitizeErrorMessage(error)}`);
             required: ["providerId"],
             additionalProperties: false
           },
-          output: MESSAGE_OUTPUT
+          output: {
+            type: "object",
+            properties: {
+              message: { type: "string" },
+              changes: {
+                type: "array",
+                items: {
+                  type: "object",
+                  properties: {
+                    id: { type: "string" },
+                    kind: { type: "string", enum: ["added", "updated", "removed"] },
+                    detail: { type: "string" }
+                  },
+                  required: ["id", "kind", "detail"],
+                  additionalProperties: false
+                }
+              }
+            },
+            required: ["message"],
+            additionalProperties: false
+          }
         },
         apply: {
           input: {
@@ -2681,7 +2757,8 @@ Technical detail: ${sanitizeErrorMessage(error)}`);
               providerId: { type: "string" },
               models: { type: "string" },
               apiKey: { type: "string" },
-              displayStyle: { type: "string", enum: ["slug", "name"] }
+              displayStyle: { type: "string", enum: ["slug", "name"] },
+              confirmReplace: { type: "boolean", description: "Replace an existing provider of the same name." }
             },
             required: ["site", "providerId"],
             additionalProperties: false
@@ -2755,7 +2832,8 @@ Technical detail: ${sanitizeErrorMessage(error)}`);
             description: "Which API style the provider speaks (default: openai-chat)"
           },
           displayStyle: { type: "string", enum: ["slug", "name"], description: "How model names are shown (default: slug = the short id)" },
-          confirmReuse: { type: "boolean", description: "Add even though another provider already uses this address" }
+          confirmReuse: { type: "boolean", description: "Add even though another provider already uses this address" },
+          confirmReplace: { type: "boolean", description: "Replace an existing provider of the same name. Required when the name is already taken." }
         },
         required: ["providerId", "baseURL"],
         additionalProperties: false
@@ -2778,7 +2856,8 @@ Technical detail: ${sanitizeErrorMessage(error)}`);
             description: "Which API style the provider speaks (default: openai-chat)"
           },
           displayStyle: { type: "string", enum: ["slug", "name"] },
-          overwrite: { type: "boolean", description: "Allow replacing a built-in provider with the same id" }
+          overwrite: { type: "boolean", description: "Allow replacing a built-in provider with the same id" },
+          confirmReplace: { type: "boolean", description: "Replace an existing provider of the same name. Required when the name is already taken." }
         },
         required: ["providerId", "baseURL", "modelIds"],
         additionalProperties: false
@@ -2843,7 +2922,7 @@ Technical detail: ${sanitizeErrorMessage(error)}`);
       execute: async (raw2) => ({ content: (await ops.remove(raw2.providerId)).message })
     });
   });
-  await ctx.provider.reload();
+  await reloadQuietly();
   await refresh().catch(() => void 0);
 };
 

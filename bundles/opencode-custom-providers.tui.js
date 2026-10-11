@@ -325,6 +325,20 @@ async function promptManualAdd(ctx, input, providerId) {
       await ctx.ui.dialog.alert({ title: `Add provider: ${providerId}`, message: manual.message });
       return;
     }
+    if (manual.status === "confirm_replace") {
+      const confirmed = await ctx.ui.dialog.confirm({
+        title: `${providerId} already exists`,
+        message: manual.message + "\n\nReplace it?",
+        label: { confirm: "Replace it", cancel: "Keep what I have" }
+      });
+      if (!confirmed) {
+        cancelled(ctx);
+        return;
+      }
+      const replaced = await call(ctx, "manualAdd", { ...input, modelIds, confirmReplace: true });
+      await ctx.ui.dialog.alert({ title: `Add provider: ${providerId}`, message: replaced.message });
+      return;
+    }
     await ctx.ui.dialog.alert({ title: "Check the model ids", message: manual.message });
   }
 }
@@ -461,6 +475,21 @@ Use '${repaired}' instead?`,
       await ctx.ui.dialog.alert({ title: `Add provider: ${providerId}`, message: result.message });
       return;
     }
+    if (result.status === "confirm_replace") {
+      const confirmed = await ctx.ui.dialog.confirm({
+        title: `${providerId} already exists`,
+        message: `You already have a provider named '${providerId}'. Adding this one would replace its settings and its model list.
+
+Replace it?`,
+        label: { confirm: "Replace it", cancel: "Keep what I have" }
+      });
+      if (confirmed) {
+        result = await call(ctx, "add", { ...input, confirmReplace: true });
+        continue;
+      }
+      cancelled(ctx);
+      return;
+    }
     if (result.status === "confirm_endpoint_reuse") {
       const confirmed = await ctx.ui.dialog.confirm({
         title: "That address is already in use",
@@ -557,21 +586,56 @@ async function wizardReprobe(ctx) {
 async function wizardApplyReconcile(ctx) {
   const provider = await pickProvider(ctx);
   if (!provider) return;
-  const { message } = await call(ctx, "reprobe", { providerId: provider.id });
-  await ctx.ui.dialog.alert({ title: `What was found for ${provider.id}`, message });
-  const choice = await ctx.ui.dialog.select({
-    title: "Apply these changes?",
-    options: [
-      {
-        title: "Apply everything",
-        value: "apply",
-        description: "Add the new models. Models that disappeared stay in your list."
-      },
-      { title: "Keep what I have", value: "keep", description: "Change nothing" }
-    ]
+  const probe = await call(ctx, "reprobe", {
+    providerId: provider.id
   });
+  const { message } = probe;
+  const changes = probe.changes ?? [];
+  await ctx.ui.dialog.alert({ title: `What was found for ${provider.id}`, message });
+  const options = [
+    {
+      title: "Review one by one",
+      value: "review",
+      description: "Decide each change on its own instead of taking all or none."
+    }
+  ];
+  if (changes.length === 0) options.pop();
+  options.push({ title: "Keep what I have", value: "keep", description: "Change nothing" });
+  options.push({
+    title: "Apply everything",
+    value: "apply",
+    description: "Add the new models. Models that disappeared stay in your list."
+  });
+  const choice = await ctx.ui.dialog.select({ title: "Apply these changes?", options });
   if (!choice) {
     cancelled(ctx);
+    return;
+  }
+  if (choice === "review") {
+    const decisions = {};
+    for (const change of changes) {
+      const vanishing = change.kind === "removed";
+      const decision = await ctx.ui.dialog.select({
+        title: sanitizeDialogText(`${change.id} (${change.kind})`),
+        options: vanishing ? [
+          { title: "Keep this model", value: "keep", description: "Leave it in your list as it is now." },
+          { title: "Remove this model", value: "apply", description: sanitizeDialogText(`Delete it: ${change.detail}`) }
+        ] : [
+          { title: "Apply this change", value: "apply", description: sanitizeDialogText(`Take the new values: ${change.detail}`) },
+          { title: "Keep what I have", value: "keep", description: "Leave this model exactly as it is now." }
+        ]
+      });
+      if (decision !== "apply" && decision !== "keep") {
+        cancelled(ctx);
+        return;
+      }
+      decisions[change.id] = decision;
+    }
+    const applied2 = await call(ctx, "apply", {
+      providerId: provider.id,
+      decisions: JSON.stringify(decisions)
+    });
+    await ctx.ui.dialog.alert({ title: `Update ${provider.id}`, message: applied2.message });
     return;
   }
   const applied = await call(ctx, "apply", { providerId: provider.id, mode: choice });
@@ -1753,6 +1817,7 @@ function diffModels(current, fresh, displayStyle) {
   const changes = [];
   const seen = /* @__PURE__ */ new Set();
   for (const p of fresh) {
+    if (seen.has(p.id)) continue;
     seen.add(p.id);
     const stored = current[p.id];
     if (!stored) {
@@ -1971,9 +2036,25 @@ function renameProviderEntry(providers, oldId, newId) {
   if (clean !== oldId && providers[clean]) {
     return { error: `A provider with ID '${clean}' already exists.` };
   }
-  delete providers[oldId];
   entry.name = clean;
-  providers[clean] = entry;
+  const originalKeys = Object.keys(providers);
+  const rebuilt = {};
+  for (const key of originalKeys) {
+    const value = key === oldId ? entry : providers[key];
+    const target = key === oldId ? clean : key;
+    Object.defineProperty(rebuilt, target, { value, enumerable: true, writable: true, configurable: true });
+  }
+  for (const key of originalKeys) {
+    delete providers[key];
+  }
+  for (const key of Object.keys(rebuilt)) {
+    Object.defineProperty(providers, key, {
+      value: rebuilt[key],
+      enumerable: true,
+      writable: true,
+      configurable: true
+    });
+  }
   const suggestion = collisionSuggestion(clean);
   if (suggestion && suggestion !== clean) {
     return {

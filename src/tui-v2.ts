@@ -1,6 +1,6 @@
 import { FLAVORS, collisionSuggestion } from "./flavors.js"
 import { parseTokenEdit, REASONING_LEVELS, reasoningLabel, resolveTokenEdit, type TokenEdit } from "./model-fields.js"
-import { isValidUrl } from "./security.js"
+import { isValidUrl, sanitizeDialogText } from "./security.js"
 import { id as pluginId } from "./ids.js"
 import type { AddProviderResult, ManualAddResult, ProviderRow, SiteRow } from "./server-v2.js"
 
@@ -265,6 +265,22 @@ async function promptManualAdd(
       await ctx.ui.dialog.alert({ title: `Add provider: ${providerId}`, message: manual.message })
       return
     }
+    // A name clash is not a bad model id, so it must not be reported as one: the old
+    // wording sent the user back to retype ids that were never the problem.
+    if (manual.status === "confirm_replace") {
+      const confirmed = await ctx.ui.dialog.confirm({
+        title: `${providerId} already exists`,
+        message: manual.message + "\n\nReplace it?",
+        label: { confirm: "Replace it", cancel: "Keep what I have" },
+      })
+      if (!confirmed) {
+        cancelled(ctx)
+        return
+      }
+      const replaced = await call<ManualAddResult>(ctx, "manualAdd", { ...input, modelIds, confirmReplace: true })
+      await ctx.ui.dialog.alert({ title: `Add provider: ${providerId}`, message: replaced.message })
+      return
+    }
     await ctx.ui.dialog.alert({ title: "Check the model ids", message: manual.message })
   }
 }
@@ -412,6 +428,21 @@ async function wizardAdd(ctx: V2TuiContext): Promise<void> {
       await ctx.ui.dialog.alert({ title: `Add provider: ${providerId}`, message: result.message })
       return
     }
+    if (result.status === "confirm_replace") {
+      const confirmed = await ctx.ui.dialog.confirm({
+        title: `${providerId} already exists`,
+        message:
+          `You already have a provider named '${providerId}'. Adding this one would replace its settings and its model list.\n\n` +
+          "Replace it?",
+        label: { confirm: "Replace it", cancel: "Keep what I have" },
+      })
+      if (confirmed) {
+        result = await call<ExtendedAddResult>(ctx, "add", { ...input, confirmReplace: true })
+        continue
+      }
+      cancelled(ctx)
+      return
+    }
     if (result.status === "confirm_endpoint_reuse") {
       const confirmed = await ctx.ui.dialog.confirm({
         title: "That address is already in use",
@@ -513,22 +544,71 @@ async function wizardReprobe(ctx: V2TuiContext): Promise<void> {
 async function wizardApplyReconcile(ctx: V2TuiContext): Promise<void> {
   const provider = await pickProvider(ctx)
   if (!provider) return
-  const { message } = await call<{ message: string }>(ctx, "reprobe", { providerId: provider.id })
+  // `changes` is the structured per-model diff; it is only present when the probe
+  // succeeded, so its absence (or emptiness) means there is nothing to review.
+  const probe = await call<{ message: string; changes?: { id: string; kind: string; detail: string }[] }>(ctx, "reprobe", {
+    providerId: provider.id,
+  })
+  const { message } = probe
+  const changes = probe.changes ?? []
   // Show what was found first: the select dialog cannot be trusted to display a long placeholder.
   await ctx.ui.dialog.alert({ title: `What was found for ${provider.id}`, message })
-  const choice = await ctx.ui.dialog.select({
-    title: "Apply these changes?",
-    options: [
-      {
-        title: "Apply everything",
-        value: "apply",
-        description: "Add the new models. Models that disappeared stay in your list.",
-      },
-      { title: "Keep what I have", value: "keep", description: "Change nothing" },
-    ],
+  // Review first, then the all-or-nothing pair, and keep before apply. The plan in
+  // docs/ux-analysis/final-plan.md asks for exactly this: the safest option should be the
+  // one under the cursor, not the one that rewrites everything.
+  const options = [
+    {
+      title: "Review one by one",
+      value: "review",
+      description: "Decide each change on its own instead of taking all or none.",
+    },
+  ]
+  if (changes.length === 0) options.pop()
+  options.push({ title: "Keep what I have", value: "keep", description: "Change nothing" })
+  options.push({
+    title: "Apply everything",
+    value: "apply",
+    description: "Add the new models. Models that disappeared stay in your list.",
   })
+  const choice = await ctx.ui.dialog.select({ title: "Apply these changes?", options })
   if (!choice) {
     cancelled(ctx)
+    return
+  }
+  if (choice === "review") {
+    // The comment this replaces claimed an Esc keeps the unrecorded models via absent-key
+    // semantics. That reasoning is unreachable: the guard below returns before any apply
+    // call, so no partial decision set is ever sent. Stated plainly so nobody later treats
+    // it as a safety proof when changing the loop to send partial decisions.
+    const decisions: Record<string, "apply" | "keep"> = {}
+    for (const change of changes) {
+      // A vanished model is deleted when the decision is anything but "keep", so the row
+      // has to say that. Labelling it "Take the new values" invited the user to delete a
+      // model while believing they were accepting an update.
+      const vanishing = change.kind === "removed"
+      const decision = await ctx.ui.dialog.select({
+        title: sanitizeDialogText(`${change.id} (${change.kind})`),
+        options: vanishing
+          ? [
+              { title: "Keep this model", value: "keep", description: "Leave it in your list as it is now." },
+              { title: "Remove this model", value: "apply", description: sanitizeDialogText(`Delete it: ${change.detail}`) },
+            ]
+          : [
+              { title: "Apply this change", value: "apply", description: sanitizeDialogText(`Take the new values: ${change.detail}`) },
+              { title: "Keep what I have", value: "keep", description: "Leave this model exactly as it is now." },
+            ],
+      })
+      if (decision !== "apply" && decision !== "keep") {
+        cancelled(ctx)
+        return
+      }
+      decisions[change.id] = decision
+    }
+    const applied = await call<{ message: string }>(ctx, "apply", {
+      providerId: provider.id,
+      decisions: JSON.stringify(decisions),
+    })
+    await ctx.ui.dialog.alert({ title: `Update ${provider.id}`, message: applied.message })
     return
   }
   const applied = await call<{ message: string }>(ctx, "apply", { providerId: provider.id, mode: choice })

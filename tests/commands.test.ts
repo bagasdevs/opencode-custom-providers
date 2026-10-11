@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest"
 import {
   chunkedAllSettled,
+  renameProviderEntry,
   persistProviderApiKey,
   reprobeProvider,
   rotateProviderApiKey,
@@ -127,6 +128,57 @@ describe("rotateProviderApiKey (server edit-provider key rotation)", () => {
       rotateProviderApiKey(entry, "p1", "sk-new", async () => false),
     ).rejects.toThrow(/Failed to persist API key/)
     expect(entry.options?.apiKey).toBe("sk-old")
+  })
+})
+
+describe("renameProviderEntry", () => {
+  it("preserves the position of the renamed entry in the key order", () => {
+    const providers = {
+      alpha: makeEntry(),
+      beta: makeEntry(),
+      gamma: makeEntry(),
+    }
+    const res = renameProviderEntry(providers, "alpha", "alpha-renamed")
+    expect(res.error).toBeUndefined()
+    expect(Object.keys(providers)).toEqual(["alpha-renamed", "beta", "gamma"])
+    expect(providers["alpha-renamed"]?.name).toBe("alpha-renamed")
+  })
+
+  it("keeps a __proto__ provider key instead of dropping it", () => {
+    // "__proto__" passes validateProviderId and JSON.parse creates it as an own key, but a
+    // plain `rebuilt[key] = value` assignment sets the object prototype instead of a key,
+    // so that provider disappeared from the config on the next write.
+    const providers = JSON.parse('{"__proto__":{"name":"evil"},"alpha":{"name":"alpha"}}') as Record<string, ProviderConfig>
+    const res = renameProviderEntry(providers, "alpha", "alpha-renamed")
+    expect(res.error).toBeUndefined()
+    expect(Object.keys(providers)).toEqual(["__proto__", "alpha-renamed"])
+    expect(Object.prototype.hasOwnProperty.call(providers, "__proto__")).toBe(true)
+  })
+
+  it("preserves position for the last, only, and same id cases", () => {
+    const last = { alpha: makeEntry(), beta: makeEntry() }
+    renameProviderEntry(last, "beta", "zed")
+    expect(Object.keys(last)).toEqual(["alpha", "zed"])
+
+    const only = { alpha: makeEntry() }
+    renameProviderEntry(only, "alpha", "solo")
+    expect(Object.keys(only)).toEqual(["solo"])
+
+    const same = { alpha: makeEntry(), beta: makeEntry() }
+    renameProviderEntry(same, "beta", "beta")
+    expect(Object.keys(same)).toEqual(["alpha", "beta"])
+  })
+
+  it("preserves position when the renamed entry is not first", () => {
+    const providers = {
+      alpha: makeEntry(),
+      beta: makeEntry(),
+      gamma: makeEntry(),
+    }
+    const res = renameProviderEntry(providers, "beta", "beta-renamed")
+    expect(res.error).toBeUndefined()
+    expect(Object.keys(providers)).toEqual(["alpha", "beta-renamed", "gamma"])
+    expect(providers["beta-renamed"]?.name).toBe("beta-renamed")
   })
 })
 

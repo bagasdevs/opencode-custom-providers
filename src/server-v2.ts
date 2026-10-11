@@ -1,12 +1,13 @@
 import { DEFAULT_FLAVOR, collisionSuggestion, parseFlavor, type ProviderFlavor } from "./flavors.js"
-import { isValidUrl, sanitizeErrorMessage, sanitizeModelId } from "./security.js"
+import { isValidUrl, sanitizeDialogText, sanitizeErrorMessage, sanitizeModelId } from "./security.js"
 import { normalizeBaseUrl } from "./endpoint.js"
 import {
   catalogToProbed,
   describeProbed,
   parseModelIds,
   previewManualModels,
-  probeEndpoint,
+  probeEndpointOutcome,
+  type ProbeOutcome,
   type ProbedModel,
 } from "./probe.js"
 import { getCatalog, listCatalogSites } from "./catalog.js"
@@ -155,11 +156,22 @@ export type AddProviderResult =
   | { readonly status: "invalid"; readonly message: string }
   | { readonly status: "unreachable"; readonly message: string; readonly detail?: string }
   | { readonly status: "manual_required"; readonly message: string }
+  | { readonly status: "confirm_replace"; readonly message: string }
   | { readonly status: "confirm_endpoint_reuse"; readonly usedBy: string[]; readonly message: string }
 
 export type ManualAddResult =
   | { readonly status: "ok"; readonly message: string }
   | { readonly status: "invalid"; readonly message: string }
+  | { readonly status: "confirm_replace"; readonly message: string }
+
+/** The prose the TUI already renders, plus the structured diff when one was
+ * computed. `changes` stays undefined on early returns (unknown provider,
+ * unreachable address, zero models) so a picker never renders from a partial
+ * probe: inventing one there would list stale models as real changes. */
+export interface ReprobeResult {
+  readonly message: string
+  readonly changes?: Array<{ id: string; kind: "added" | "updated" | "removed"; detail: string }>
+}
 
 const RPC_ID = id
 
@@ -173,7 +185,7 @@ const MESSAGE_OUTPUT = {
 const ADD_OUTPUT = {
   type: "object",
   properties: {
-    status: { type: "string", enum: ["ok", "invalid", "unreachable", "manual_required", "confirm_endpoint_reuse"] },
+    status: { type: "string", enum: ["ok", "invalid", "unreachable", "manual_required", "confirm_replace", "confirm_endpoint_reuse"] },
     message: { type: "string" },
     detail: { type: "string" },
     usedBy: { type: "array", items: { type: "string" } },
@@ -467,12 +479,14 @@ export const setup = async (ctx: V2Context): Promise<void> => {
     }
   }
 
-  const discover = async (candidate: Candidate): Promise<ProbedModel[]> => {
+  const discover = async (candidate: Candidate): Promise<ProbeOutcome> => {
     // overrideKey lets a caller validate a proposed key before it is stored; without it the
     // stored credential wins, so a rejected key would be persisted and then probed as the old one.
     const apiKey = candidate.overrideKey ?? (await credentialKey(candidate.providerId)) ?? candidate.apiKey
-    const fresh = await probeEndpoint(candidate.baseURL, apiKey, candidate.flavor)
-    return fresh.map(item => ({ ...item, id: sanitizeModelId(item.id) }))
+    // The outcome's baseURL is the candidate that actually answered (often the /v1 variant),
+    // so callers can persist that instead of re-walking the candidate list on every refresh.
+    const outcome = await probeEndpointOutcome(candidate.baseURL, apiKey, candidate.flavor)
+    return { ...outcome, models: outcome.models.map(item => ({ ...item, id: sanitizeModelId(item.id) })) }
   }
 
   const registerIntegration = async (providerId: string) => {
@@ -492,12 +506,16 @@ export const setup = async (ctx: V2Context): Promise<void> => {
     await ctx.integration.reload()
   }
 
-  const applyModels = async (providerId: string, fresh: ProbedModel[], displayStyle: DisplayStyle) => {
+  const applyModels = async (providerId: string, fresh: ProbedModel[], baseURL: string, displayStyle: DisplayStyle) => {
     const models = modelsFor(providerId)
     for (const probed of fresh) models.set(probed.id, probedToDraftKeepingEdits(models.get(probed.id), probed, displayStyle))
+    // Keep the URL that actually answered (often the /v1 variant of what was typed),
+    // so the next probe does not re-walk the candidate list.
+    const entry = managed.get(providerId)
+    if (entry) entry.baseURL = baseURL
     // Persist before publishing to the host, so a crash right after cannot lose the models.
     await persist()
-    await ctx.provider.reload()
+    await reloadQuietly()
   }
 
   interface RefreshOutcome {
@@ -514,30 +532,32 @@ export const setup = async (ctx: V2Context): Promise<void> => {
     for (const candidate of [...candidates.values()]) {
       if (only !== undefined && candidate.providerId !== only) continue
       outcome.checked++
-      let fresh: ProbedModel[]
+      let fresh: ProbeOutcome
       try {
         fresh = await discover(candidate)
       } catch {
         outcome.failed.push(candidate.providerId)
         continue
       }
-      lastProbe.set(candidate.providerId, fresh.length)
-      lastProbeModels.set(candidate.providerId, fresh)
-      if (fresh.length === 0) {
+      lastProbe.set(candidate.providerId, fresh.models.length)
+      lastProbeModels.set(candidate.providerId, fresh.models)
+      if (fresh.models.length === 0) {
         outcome.empty.push(candidate.providerId)
         continue
       }
       const models = modelsFor(candidate.providerId)
       // Compare content, not just the count: a model can change limits or price without changing the total.
       const before = fingerprint(models)
-      for (const probed of fresh) models.set(probed.id, probedToDraftKeepingEdits(models.get(probed.id), probed, candidate.displayStyle))
+      for (const probed of fresh.models) models.set(probed.id, probedToDraftKeepingEdits(models.get(probed.id), probed, candidate.displayStyle))
       if (fingerprint(models) === before) outcome.unchanged.push(candidate.providerId)
       else outcome.updated.push(candidate.providerId)
+      // The URL that answered, not the as-typed candidate, is what the next refresh should use.
+      rememberAnsweredUrl(candidate, fresh)
       changed = true
     }
     if (changed) {
       await persist()
-      await ctx.provider.reload()
+      await reloadQuietly()
     }
     return outcome
   }
@@ -563,9 +583,34 @@ export const setup = async (ctx: V2Context): Promise<void> => {
     return Math.max(0, probed - (discovered.get(providerId)?.size ?? 0))
   }
 
+  /** Reload the host's provider snapshot after a write. The write is already on
+   * disk, so a failure here must not be reported as a failed write: the snapshot
+   * is rebuilt on the next restart. */
+  const reloadQuietly = async (): Promise<void> => {
+    try {
+      await ctx.provider.reload()
+    } catch {
+      // Best effort. See above.
+    }
+  }
+
+  /** Remember the address that actually answered.
+   *
+   * A probe walks candidate URLs (bare host, then /v1, then http for local hosts). Only
+   * refresh used to write the winner back, so a session that only ran /reprobe or
+   * /apply-reconcile kept the as-typed address and re-walked the candidates on every
+   * later probe. Returns true when something changed and the caller must persist. */
+  const rememberAnsweredUrl = (candidate: Candidate, fresh: ProbeOutcome): boolean => {
+    if (fresh.baseURL === candidate.baseURL) return false
+    candidate.baseURL = fresh.baseURL
+    const entry = managed.get(candidate.providerId)
+    if (entry) entry.baseURL = fresh.baseURL
+    return true
+  }
+
   const ops = {
     list: async (): Promise<{ providers: ProviderRow[] }> => {
-      await ctx.provider.reload()
+      await reloadQuietly()
       const providers: ProviderRow[] = []
       for (const [providerId, candidate] of candidates) {
         providers.push({
@@ -589,6 +634,7 @@ export const setup = async (ctx: V2Context): Promise<void> => {
       displayStyle?: DisplayStyle
       overwrite?: boolean
       confirmReuse?: boolean
+      confirmReplace?: boolean
     }): Promise<AddProviderResult> => {
       if (!validId(input.providerId)) {
         return { status: "invalid", message: "The provider name may only contain letters, numbers, hyphens and underscores. Example: my-proxy" }
@@ -610,6 +656,12 @@ export const setup = async (ctx: V2Context): Promise<void> => {
             `Use '${clash}' instead, or add the same provider again with overwrite=true if you really mean to replace it.`,
         }
       }
+            // A provider can also exist as a host record this plugin did not create (an old-format
+      // entry, or one written by hand), which appears in `candidates` but never in `managed`.
+      // Testing only `managed` left that one silently replaceable.
+if ((managed.has(input.providerId) || candidates.has(input.providerId)) && !input.confirmReplace) {
+        return { status: "confirm_replace", message: `'${input.providerId}' is already one of your providers, so this would replace its settings and model list.` }
+      }
       // The same address under two names duplicates every model in the picker.
       const reused = [...managed.entries()].filter(
         ([id, entry]) => id !== input.providerId && entry.baseURL.replace(/\/+$/, "") === normalizeBaseUrl(input.baseURL),
@@ -630,7 +682,7 @@ export const setup = async (ctx: V2Context): Promise<void> => {
         flavor: parseFlavor(input.flavor) ?? DEFAULT_FLAVOR,
         displayStyle: input.displayStyle === "name" ? "name" : "slug",
       }
-      let fresh: ProbedModel[]
+      let fresh: ProbeOutcome
       try {
         fresh = await discover(candidate)
       } catch (error) {
@@ -640,7 +692,7 @@ export const setup = async (ctx: V2Context): Promise<void> => {
           detail: sanitizeErrorMessage(error),
         }
       }
-      if (fresh.length === 0) {
+      if (fresh.models.length === 0) {
         return {
           status: "manual_required",
           message: `The address ${candidate.baseURL} answered but listed no models. Nothing was saved; you can enter model names manually.`,
@@ -648,17 +700,17 @@ export const setup = async (ctx: V2Context): Promise<void> => {
       }
       await clearRemoval(candidate.providerId)
       managed.set(candidate.providerId, {
-        baseURL: candidate.baseURL,
+        baseURL: fresh.baseURL,
         flavor: candidate.flavor,
         displayStyle: candidate.displayStyle,
       })
       // applyModels persists once the models are known, so no separate write is needed here.
       await registerIntegration(candidate.providerId)
-      await applyModels(candidate.providerId, fresh, candidate.displayStyle)
+      await applyModels(candidate.providerId, fresh.models, fresh.baseURL, candidate.displayStyle)
       const lines = [
-        `Done. '${candidate.providerId}' is ready with ${fresh.length} model${fresh.length === 1 ? "" : "s"}. Open the model picker and choose one to start using it.`,
-        `First model: ${fresh[0].id}`,
-        `Details: ${describeProbed(fresh[0])}`,
+        `Done. '${candidate.providerId}' is ready with ${fresh.models.length} model${fresh.models.length === 1 ? "" : "s"}. Open the model picker and choose one to start using it.`,
+        `First model: ${fresh.models[0].id}`,
+        `Details: ${describeProbed(fresh.models[0])}`,
       ]
       if (input.apiKey) {
         try {
@@ -678,7 +730,7 @@ export const setup = async (ctx: V2Context): Promise<void> => {
       // Without a key the provider is stored but unusable, so the first line must not read as
       // an unqualified success: that is what makes a half-finished setup look complete.
       if (!input.apiKey) {
-        lines[0] = `Saved '${candidate.providerId}' with ${fresh.length} model${fresh.length === 1 ? "" : "s"}, but it has no API key yet so it cannot sign in.`
+        lines[0] = `Saved '${candidate.providerId}' with ${fresh.models.length} model${fresh.models.length === 1 ? "" : "s"}, but it has no API key yet so it cannot sign in.`
       }
       return { status: "ok", message: lines.join("\n") }
     },
@@ -691,6 +743,7 @@ export const setup = async (ctx: V2Context): Promise<void> => {
       flavor?: string
       displayStyle?: DisplayStyle
       overwrite?: boolean
+      confirmReplace?: boolean
     }): Promise<ManualAddResult> => {
       if (!validId(input.providerId)) {
         return { status: "invalid", message: "Use a provider name with letters, numbers, hyphens, or underscores." }
@@ -705,6 +758,9 @@ export const setup = async (ctx: V2Context): Promise<void> => {
           status: "invalid",
           message: `'${input.providerId}' is a built-in provider name. Use '${clash}' instead.`,
         }
+      }
+      if ((managed.has(input.providerId) || candidates.has(input.providerId)) && !input.confirmReplace) {
+        return { status: "confirm_replace", message: `'${input.providerId}' is already one of your providers, so this would replace its settings and model list.` }
       }
       const modelIds = parseModelIds(input.modelIds)
       if (!modelIds?.length) {
@@ -735,7 +791,7 @@ export const setup = async (ctx: V2Context): Promise<void> => {
         displayStyle: candidate.displayStyle,
       })
       await registerIntegration(candidate.providerId)
-      await applyModels(candidate.providerId, unique, displayStyle)
+      await applyModels(candidate.providerId, unique, candidate.baseURL, displayStyle)
       let keyMessage = ""
       if (input.apiKey) {
         try {
@@ -804,9 +860,9 @@ export const setup = async (ctx: V2Context): Promise<void> => {
         }
         try {
           const fresh = await discover(candidate)
-          await applyModels(input.providerId, fresh, candidate.displayStyle)
+          await applyModels(input.providerId, fresh.models, fresh.baseURL, candidate.displayStyle)
         } catch (error) {
-          await ctx.provider.reload()
+          await reloadQuietly()
           return {
             message:
               `Saved. '${input.providerId}' now uses the new address, but it did not answer with a model list yet.\n${probeHint(error)}\n` +
@@ -819,7 +875,7 @@ export const setup = async (ctx: V2Context): Promise<void> => {
         // instead of hitting the network for a cosmetic change.
         const raw = lastProbeModels.get(input.providerId)
         if (raw) {
-          await applyModels(input.providerId, raw, next.displayStyle ?? "slug")
+          await applyModels(input.providerId, raw, next.baseURL, next.displayStyle ?? "slug")
         } else {
           const candidate: Candidate = {
             providerId: input.providerId,
@@ -828,14 +884,15 @@ export const setup = async (ctx: V2Context): Promise<void> => {
             displayStyle: next.displayStyle ?? "slug",
           }
           try {
-            await applyModels(input.providerId, await discover(candidate), candidate.displayStyle)
+            const outcome = await discover(candidate)
+            await applyModels(input.providerId, outcome.models, outcome.baseURL, candidate.displayStyle)
           } catch (error) {
             return { message: `Saved the new name style, but the provider could not be re-read to apply it.\n${probeHint(error)}\n\nTechnical detail: ${sanitizeErrorMessage(error)}` }
           }
         }
-        await ctx.provider.reload()
+        await reloadQuietly()
       } else {
-        await ctx.provider.reload()
+        await reloadQuietly()
       }
       const changed: string[] = []
       if (input.baseURL !== undefined) changed.push("a new address")
@@ -864,7 +921,9 @@ export const setup = async (ctx: V2Context): Promise<void> => {
             const fields = readModelFields(draft)
             const row: ModelRow = {
               id: modelId,
-              name: typeof draft.name === "string" && draft.name ? draft.name : modelId,
+              // Endpoint-provided, so it can carry control characters that break a host
+              // widget's key handling when shown in a dialog title (see sanitizeDialogText).
+              name: sanitizeDialogText(typeof draft.name === "string" && draft.name ? draft.name : modelId),
               reasoning: fields.reasoning,
               reasoningLabel: reasoningLabel(fields.reasoning),
               image: fields.image,
@@ -920,7 +979,7 @@ export const setup = async (ctx: V2Context): Promise<void> => {
       applyModelFields(draft, next)
       models.set(input.modelId, draft)
       await persist()
-      await ctx.provider.reload()
+      await reloadQuietly()
       const saved = readModelFields(draft)
       return {
         status: "ok",
@@ -960,7 +1019,7 @@ export const setup = async (ctx: V2Context): Promise<void> => {
         for (const modelId of staleModels) providers.models.remove(providerId, modelId)
       })
       discovered.delete(providerId)
-      await ctx.provider.reload()
+      await reloadQuietly()
       return {
         message:
           `Removed '${providerId}' and its ${staleModels.length} model${staleModels.length === 1 ? "" : "s"}. ` +
@@ -968,31 +1027,37 @@ export const setup = async (ctx: V2Context): Promise<void> => {
       }
     },
 
-    reprobe: async (providerId: string): Promise<{ message: string }> => {
+    reprobe: async (providerId: string): Promise<ReprobeResult> => {
       const candidate = candidates.get(providerId)
       if (!candidate) return { message: `There is no provider named '${providerId}'. Run /list-custom-providers to see your providers.` }
-      let fresh: ProbedModel[]
+      let fresh: ProbeOutcome
       try {
         fresh = await discover(candidate)
       } catch (error) {
         return { message: `Nothing was saved: the address ${candidate.baseURL} did not answer with a model list.\n${probeHint(error)}\n\nTechnical detail: ${sanitizeErrorMessage(error)}` }
       }
-      lastProbe.set(providerId, fresh.length)
-      lastProbeModels.set(providerId, fresh)
+      lastProbe.set(providerId, fresh.models.length)
+      lastProbeModels.set(providerId, fresh.models)
+      // Persist the winner even though this path only reads, so the next probe does not
+      // re-walk the candidate list for an address the endpoint never served from.
+      if (rememberAnsweredUrl(candidate, fresh)) {
+        await persist()
+        await reloadQuietly()
+      }
       const stored = [...(storedIds.get(providerId) ?? [])]
-      if (fresh.length === 0) {
+      if (fresh.models.length === 0) {
         return { message: `The provider listed no models.\n${zeroModelsHint(Boolean(await credentialKey(providerId) ?? candidate.apiKey))}\n\nStored models were kept, so nothing broke.` }
       }
       // Field-level diff, so a metadata change upstream is not reported as "up to date".
       const current = Object.fromEntries(storedModels.get(providerId) ?? new Map<string, EnrichedModel>())
-      const changes = diffModels(current, fresh, candidate.displayStyle)
+      const changes = diffModels(current, fresh.models, candidate.displayStyle)
       const added = changes.filter(change => change.kind === "added")
       const updated = changes.filter(change => change.kind === "updated")
       const vanished = changes.filter(change => change.kind === "removed")
       const lines = [
         changes.length === 0
-          ? `Up to date: the provider still lists the same ${fresh.length} model${fresh.length === 1 ? "" : "s"}. Nothing to do.`
-          : `Found ${fresh.length} model${fresh.length === 1 ? "" : "s"} at the provider (you had ${stored.length}).`,
+          ? `Up to date: the provider still lists the same ${fresh.models.length} model${fresh.models.length === 1 ? "" : "s"}. Nothing to do.`
+          : `Found ${fresh.models.length} model${fresh.models.length === 1 ? "" : "s"} at the provider (you had ${stored.length}).`,
       ]
       const PREVIEW = 5
       for (const change of added.slice(0, PREVIEW)) lines.push(`  + new: ${change.id}`)
@@ -1005,7 +1070,7 @@ export const setup = async (ctx: V2Context): Promise<void> => {
         lines.push('')
         lines.push('Nothing has changed yet. Run "Reload all models" to apply everything, or "Review model changes" to choose.')
       }
-      return { message: lines.join("\n") }
+      return { message: lines.join("\n"), changes: changes.map(change => ({ id: change.id, kind: change.kind, detail: change.detail })) }
     },
 
     apply: async (input: { providerId: string; decisions?: string; mode?: string }): Promise<{ message: string }> => {
@@ -1033,11 +1098,17 @@ export const setup = async (ctx: V2Context): Promise<void> => {
           decisions[modelId] = decision
         }
       }
-      let fresh: ProbedModel[]
+      let fresh: ProbeOutcome
       try {
         fresh = await discover(candidate)
       } catch (error) {
         return { message: `Nothing was saved: the address ${candidate.baseURL} did not answer with a model list.\n${probeHint(error)}\n\nTechnical detail: ${sanitizeErrorMessage(error)}` }
+      }
+      // Same reasoning as reprobe: the URL that answered is what the next probe should
+      // start from, and this path is the one users hit most often through /review-model-changes.
+      if (rememberAnsweredUrl(candidate, fresh)) {
+        await persist()
+        await reloadQuietly()
       }
       if (keepOnly) {
         return { message: `Kept your ${storedIds.get(input.providerId)?.size ?? 0} stored model(s) for '${input.providerId}'. Nothing was changed.` }
@@ -1045,9 +1116,9 @@ export const setup = async (ctx: V2Context): Promise<void> => {
       const models = modelsFor(input.providerId)
       // The live map is authoritative here; storedIds only fills in after a transform replay.
       const stored = new Set(models.keys())
-      const freshIds = new Set(fresh.map(item => item.id))
+      const freshIds = new Set(fresh.models.map(item => item.id))
       let removed = 0
-      for (const probed of fresh) {
+      for (const probed of fresh.models) {
         // Absent means "keep" for a model the user already tuned; only new models default to apply.
         const decision = decisions[probed.id] ?? (stored.has(probed.id) ? "keep" : "apply")
         if (decision === "remove") {
@@ -1055,7 +1126,10 @@ export const setup = async (ctx: V2Context): Promise<void> => {
           removed++
           continue
         }
-        if (decision === "keep" && stored.has(probed.id)) continue
+        // A keep must be a keep. The diff the user answered was computed against the
+        // transform-replayed snapshot, which can differ from the live map, and a keep that
+        // fell through here rewrote the model the user asked to leave alone.
+        if (decision === "keep") continue
         models.set(probed.id, probedToDraft(probed, candidate.displayStyle))
       }
       for (const modelId of stored) {
@@ -1065,7 +1139,7 @@ export const setup = async (ctx: V2Context): Promise<void> => {
         removed++
       }
       await persist()
-      await ctx.provider.reload()
+      await reloadQuietly()
       const total = [...models.values()].length
       return {
         message:
@@ -1076,7 +1150,7 @@ export const setup = async (ctx: V2Context): Promise<void> => {
     },
 
     refresh: async (): Promise<{ message: string }> => {
-      await ctx.provider.reload()
+      await reloadQuietly()
       const outcome = await refresh()
       const lines: string[] = [`Checked ${outcome.checked} provider(s).`]
       if (outcome.updated.length > 0) lines.push(`Updated: ${outcome.updated.join(", ")}.`)
@@ -1104,6 +1178,7 @@ export const setup = async (ctx: V2Context): Promise<void> => {
       models?: string
       apiKey?: string
       displayStyle?: DisplayStyle
+      confirmReplace?: boolean
     }): Promise<{ message: string }> => {
       if (!validId(input.providerId)) {
         return { message: "The provider name may only contain letters, numbers, hyphens and underscores. Example: my-proxy" }
@@ -1118,6 +1193,11 @@ export const setup = async (ctx: V2Context): Promise<void> => {
             `'${input.providerId}' is the id of a built-in provider, so adding it here would take it over. ` +
             `Use a different name, for example '${clash}'.`,
         }
+      }
+      // The same self-replace guard add and manualAdd carry. Without it this path was the
+      // one way left to wipe a tuned provider without being asked.
+      if ((managed.has(input.providerId) || candidates.has(input.providerId)) && !input.confirmReplace) {
+        return { message: `'${input.providerId}' is already one of your providers, so this would replace its settings and model list.` }
       }
       const catalog = await getCatalog()
       const site = catalog[input.site]
@@ -1138,6 +1218,7 @@ export const setup = async (ctx: V2Context): Promise<void> => {
       await applyModels(
         input.providerId,
         chosen.map(modelId => catalogToProbed(site.models[modelId])),
+        site.api,
         displayStyle,
       )
       const lines = [`Done. '${input.providerId}' is ready with ${chosen.length} model${chosen.length === 1 ? "" : "s"} from '${input.site}'.`]
@@ -1195,6 +1276,7 @@ export const setup = async (ctx: V2Context): Promise<void> => {
               displayStyle: { type: "string", enum: ["slug", "name"] },
               overwrite: { type: "boolean" },
               confirmReuse: { type: "boolean" },
+              confirmReplace: { type: "boolean", description: "Replace an existing provider of the same name." },
             },
             required: ["providerId", "baseURL"],
             additionalProperties: false,
@@ -1212,6 +1294,7 @@ export const setup = async (ctx: V2Context): Promise<void> => {
               flavor: { type: "string" },
               displayStyle: { type: "string", enum: ["slug", "name"] },
               overwrite: { type: "boolean" },
+              confirmReplace: { type: "boolean", description: "Replace an existing provider of the same name." },
             },
             required: ["providerId", "baseURL", "modelIds"],
             additionalProperties: false,
@@ -1307,7 +1390,27 @@ export const setup = async (ctx: V2Context): Promise<void> => {
             required: ["providerId"],
             additionalProperties: false,
           },
-          output: MESSAGE_OUTPUT,
+          output: {
+            type: "object",
+            properties: {
+              message: { type: "string" },
+              changes: {
+                type: "array",
+                items: {
+                  type: "object",
+                  properties: {
+                    id: { type: "string" },
+                    kind: { type: "string", enum: ["added", "updated", "removed"] },
+                    detail: { type: "string" },
+                  },
+                  required: ["id", "kind", "detail"],
+                  additionalProperties: false,
+                },
+              },
+            },
+            required: ["message"],
+            additionalProperties: false,
+          },
         },
         apply: {
           input: {
@@ -1355,6 +1458,7 @@ export const setup = async (ctx: V2Context): Promise<void> => {
               models: { type: "string" },
               apiKey: { type: "string" },
               displayStyle: { type: "string", enum: ["slug", "name"] },
+              confirmReplace: { type: "boolean", description: "Replace an existing provider of the same name." },
             },
             required: ["site", "providerId"],
             additionalProperties: false,
@@ -1441,6 +1545,7 @@ export const setup = async (ctx: V2Context): Promise<void> => {
           },
           displayStyle: { type: "string", enum: ["slug", "name"], description: "How model names are shown (default: slug = the short id)" },
           confirmReuse: { type: "boolean", description: "Add even though another provider already uses this address" },
+          confirmReplace: { type: "boolean", description: "Replace an existing provider of the same name. Required when the name is already taken." },
         },
         required: ["providerId", "baseURL"],
         additionalProperties: false,
@@ -1465,6 +1570,7 @@ export const setup = async (ctx: V2Context): Promise<void> => {
           },
           displayStyle: { type: "string", enum: ["slug", "name"] },
           overwrite: { type: "boolean", description: "Allow replacing a built-in provider with the same id" },
+          confirmReplace: { type: "boolean", description: "Replace an existing provider of the same name. Required when the name is already taken." },
         },
         required: ["providerId", "baseURL", "modelIds"],
         additionalProperties: false,
@@ -1538,6 +1644,6 @@ export const setup = async (ctx: V2Context): Promise<void> => {
     })
   })
 
-  await ctx.provider.reload()
+  await reloadQuietly()
   await refresh().catch(() => undefined)
 }
