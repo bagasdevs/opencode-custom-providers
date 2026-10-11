@@ -1,5 +1,6 @@
 import { discoverAndEnrich, clearModelsDevCache, type DisplayStyle } from "./discovery.js"
 import { isValidUrl, sanitizeErrorMessage } from "./security.js"
+import { normalizeBaseUrl } from "./endpoint.js"
 import { getApiKey, shouldDiscover, type ProviderConfig } from "./types.js"
 
 export interface ReloadResult {
@@ -142,7 +143,10 @@ export function validateAddProviderParams(
 ): string | null {
   const idError = validateProviderId(params.providerId)
   if (idError) return idError
-  if (!isValidUrl(params.baseURL)) {
+  // Repair the near-miss forms v2 already accepts, so the same address is not valid in
+  // one surface and rejected in the other. A bare host and a pasted full path both pass
+  // isValidUrl, so validating without repairing would persist an address that 404s.
+  if (!isValidUrl(normalizeBaseUrl(params.baseURL))) {
     return "Invalid Base URL. Please enter a full URL (including https://)."
   }
   if (existingProviders[params.providerId] && !params.overwrite) {
@@ -155,8 +159,10 @@ export async function addProvider(
   params: AddProviderParams,
 ): Promise<AddProviderResult> {
   const displayStyle = params.displayStyle ?? "slug"
-  const baseURL = params.baseURL.trim().replace(/\/+$/, "")
-
+  // Normalize once, here, so the stored address is the one that actually answered the
+  // probe: a bare host or a pasted full path would otherwise be persisted verbatim and
+  // every later probe would 404 against it.
+  const baseURL = normalizeBaseUrl(params.baseURL).replace(/\/+$/, "")
   try {
     const models = await discoverAndEnrich(baseURL, params.apiKey, displayStyle, params.flavor ?? DEFAULT_FLAVOR)
     const modelCount = Object.keys(models).length

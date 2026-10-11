@@ -19,6 +19,7 @@ import {
   type ModelField,
 } from "./commands.js"
 import { isValidUrl } from "./security.js"
+import { normalizeBaseUrl } from "./endpoint.js"
 import { FLAVORS, collisionSuggestion } from "./flavors.js"
 import type { TriDecision } from "./reconcile.js"
 import { describeProbed, buildCatalogModels, parseModelIds, previewManualModels } from "./probe.js"
@@ -483,7 +484,7 @@ export const tui: TuiPlugin = async (api: TuiPluginApi) => {
         if (action === "endpoint") {
           const raw = await showPrompt(api, "Base URL", provider.options?.baseURL)
           if (!raw) return
-          const baseURL = raw.trim().replace(/\/+$/, "")
+          const baseURL = normalizeBaseUrl(raw).replace(/\/+$/, "")
           if (!isValidUrl(baseURL)) {
             api.ui.toast({ message: "Invalid Base URL.", variant: "error" })
             return

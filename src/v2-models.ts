@@ -59,6 +59,30 @@ export function probedToDraft(probed: ProbedModel, displayStyle: DisplayStyle = 
   return draft
 }
 
+/** The fields the model editor owns. A re-probe must not undo them. */
+const EDITOR_OWNED = ["capabilities", "limit", "reasoning", "thinkingLevelMap", "variants", "edited"] as const
+
+/** A probed draft, keeping the values a user set by hand.
+ *
+ * A plain re-probe reports what the endpoint says about a model and would otherwise
+ * replace the whole draft, so a tuned thinking level, image toggle, or token limit
+ * would silently revert on the next refresh. Fields the endpoint measures and the
+ * editor does not own (name, cost, family, status) still update. */
+export function probedToDraftKeepingEdits(
+  existing: V2ModelDraft | undefined,
+  probed: ProbedModel,
+  displayStyle: DisplayStyle = "slug",
+): V2ModelDraft {
+  const fresh = probedToDraft(probed, displayStyle)
+  if (!existing || existing.edited !== true) return fresh
+  const kept = { ...fresh } as Record<string, unknown>
+  const source = existing as Record<string, unknown>
+  for (const key of EDITOR_OWNED) {
+    if (source[key] !== undefined) kept[key] = source[key]
+  }
+  return kept as V2ModelDraft
+}
+
 export function mergeDiscoveredIntoStored(target: Record<string, unknown>, fresh: V2ModelDraft): void {
   for (const [key, value] of Object.entries(fresh)) {
     if (value === undefined) continue

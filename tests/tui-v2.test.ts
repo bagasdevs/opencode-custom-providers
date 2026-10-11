@@ -428,3 +428,30 @@ describe("v2 model field editing", () => {
     expect(state.calls.some(call => call.method === "editModel")).toBe(false)
   })
 })
+
+describe("v2 catalog add cancellation", () => {
+  // Esc at either prompt must reach no write: an escaped model list used to become
+  // "add every model", which is the opposite of what the user asked for.
+  async function runCatalog(state: ReturnType<typeof makeContext>): Promise<void> {
+    setup(state.context)
+    const command = state.getLayer()?.commands?.find(item => item.slash?.name === "add-known-provider")
+    if (!command) throw new Error("add-known-provider command was not registered")
+    await command.run()
+  }
+
+  it("writes nothing when Esc is pressed at the model prompt", async () => {
+    // select: site, prompt: provider name, prompt: model list (Esc), prompt: API key (answered)
+    // The key is answered so the model guard is the only thing that can stop the write.
+    const state = makeContext([{ sites: [{ id: "openrouter", name: "OpenRouter", modelCount: 12 }] }], ["my-proxy", undefined, ""], ["openrouter"])
+    await runCatalog(state)
+    expect(state.calls.some(call => call.method === "catalog.add")).toBe(false)
+  })
+
+  it("writes nothing when Esc is pressed at the API key prompt", async () => {
+    // select: site, prompt: provider name, prompt: model list, prompt: API key (Esc)
+    const state = makeContext([{ sites: [{ id: "openrouter", name: "OpenRouter", modelCount: 12 }] }], ["my-proxy", "", undefined], ["openrouter"])
+    await runCatalog(state)
+    expect(state.calls.some(call => call.method === "catalog.add")).toBe(false)
+  })
+})
+

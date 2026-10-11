@@ -19,9 +19,11 @@ export function sanitizeUrl(raw: string): string {
     url.username = ""
     url.password = ""
     url.search = ""
+    // A fragment can carry a credential too, and it reaches the host log verbatim.
+    url.hash = ""
     return url.toString()
   } catch {
-    return raw.split("?")[0]
+    return raw.split(/[?#]/)[0]
   }
 }
 

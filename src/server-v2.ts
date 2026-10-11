@@ -10,8 +10,8 @@ import {
   type ProbedModel,
 } from "./probe.js"
 import { getCatalog, listCatalogSites } from "./catalog.js"
-import { mergeDiscoveredIntoStored, probedToDraft, type V2ModelDraft } from "./v2-models.js"
-import { applyModelFields, readModelFields, REASONING_LEVELS, reasoningLabel, type ReasoningLevel } from "./model-fields.js"
+import { mergeDiscoveredIntoStored, probedToDraft, probedToDraftKeepingEdits, type V2ModelDraft } from "./v2-models.js"
+import { applyModelFields, MAX_TOKEN_LIMIT, readModelFields, REASONING_LEVELS, reasoningLabel, type ReasoningLevel } from "./model-fields.js"
 import { diffModels } from "./reconcile.js"
 import type { DisplayStyle, EnrichedModel } from "./enrich.js"
 
@@ -329,7 +329,15 @@ function parseManaged(raw: unknown): Map<string, ManagedProvider> {
 }
 
 export const setup = async (ctx: V2Context): Promise<void> => {
-  const managed = parseManaged(await ctx.storage.get(STORAGE_KEY).catch(() => undefined))
+  // A failed read must be distinguishable from "nothing stored yet". If they are the
+  // same, a transient storage error empties `managed` and the next persist writes an
+  // empty object, deleting every provider the user had.
+  let loaded = true
+  const raw = await ctx.storage.get(STORAGE_KEY).catch(() => {
+    loaded = false
+    return undefined
+  })
+  const managed = parseManaged(raw)
   const removed = new Set<string>(await ctx.storage.get(REMOVED_KEY).catch(() => undefined) as string[] | undefined ?? [])
   const candidates = new Map<string, Candidate>()
   const discovered = new Map<string, Map<string, V2ModelDraft>>()
@@ -358,6 +366,9 @@ export const setup = async (ctx: V2Context): Promise<void> => {
   }
 
   const persist = async () => {
+    // Refuse to write when the initial load failed: the in-memory state is not the
+    // user's real state, and writing it would replace good data with an empty set.
+    if (!loaded) throw new Error("The saved provider list could not be read, so nothing was written. Restart opencode and try again.")
     await ctx.storage.set(
       STORAGE_KEY,
       Object.fromEntries(
@@ -483,7 +494,7 @@ export const setup = async (ctx: V2Context): Promise<void> => {
 
   const applyModels = async (providerId: string, fresh: ProbedModel[], displayStyle: DisplayStyle) => {
     const models = modelsFor(providerId)
-    for (const probed of fresh) models.set(probed.id, probedToDraft(probed, displayStyle))
+    for (const probed of fresh) models.set(probed.id, probedToDraftKeepingEdits(models.get(probed.id), probed, displayStyle))
     // Persist before publishing to the host, so a crash right after cannot lose the models.
     await persist()
     await ctx.provider.reload()
@@ -519,7 +530,7 @@ export const setup = async (ctx: V2Context): Promise<void> => {
       const models = modelsFor(candidate.providerId)
       // Compare content, not just the count: a model can change limits or price without changing the total.
       const before = fingerprint(models)
-      for (const probed of fresh) models.set(probed.id, probedToDraft(probed, candidate.displayStyle))
+      for (const probed of fresh) models.set(probed.id, probedToDraftKeepingEdits(models.get(probed.id), probed, candidate.displayStyle))
       if (fingerprint(models) === before) outcome.unchanged.push(candidate.providerId)
       else outcome.updated.push(candidate.providerId)
       changed = true
@@ -851,15 +862,19 @@ export const setup = async (ctx: V2Context): Promise<void> => {
         models: [...models.entries()]
           .map(([modelId, draft]) => {
             const fields = readModelFields(draft)
-            return {
+            const row: ModelRow = {
               id: modelId,
               name: typeof draft.name === "string" && draft.name ? draft.name : modelId,
               reasoning: fields.reasoning,
               reasoningLabel: reasoningLabel(fields.reasoning),
               image: fields.image,
-              context: fields.context,
-              output: fields.output,
             }
+            // The output schema declares these as numbers, so an unset limit must be an
+            // absent key: writing the key with undefined fails validation and the whole
+            // listModels call is rejected, leaving the provider unlistable.
+            if (fields.context !== undefined) row.context = fields.context
+            if (fields.output !== undefined) row.output = fields.output
+            return row
           })
           .sort((a, b) => a.id.localeCompare(b.id)),
       }
@@ -883,6 +898,17 @@ export const setup = async (ctx: V2Context): Promise<void> => {
       }
       if (input.reasoning !== undefined && !(REASONING_LEVELS as readonly string[]).includes(input.reasoning)) {
         return { status: "invalid", message: `'${input.reasoning}' is not a reasoning level. Pick one from the list.` }
+      }
+      // A limit must be a whole number of tokens. A negative, fractional, or unsafe value
+      // would be persisted and then break the listModels output schema, which rejects a
+      // non-number, leaving the provider unlistable until storage is edited by hand.
+      for (const [field, value] of [
+        ["context", input.context],
+        ["output", input.output],
+      ] as const) {
+        if (value !== undefined && (!Number.isSafeInteger(value) || value < 0 || value > MAX_TOKEN_LIMIT)) {
+          return { status: "invalid", message: `The ${field} limit must be a whole number of tokens up to ${MAX_TOKEN_LIMIT}, or 0 to clear it.` }
+        }
       }
       const current = readModelFields(draft)
       const next = {
@@ -1081,6 +1107,17 @@ export const setup = async (ctx: V2Context): Promise<void> => {
     }): Promise<{ message: string }> => {
       if (!validId(input.providerId)) {
         return { message: "The provider name may only contain letters, numbers, hyphens and underscores. Example: my-proxy" }
+      }
+      // The wizard defaults the id to the site id, and a site id can match a built-in
+      // provider. Without this guard the catalog write would take over that provider
+      // and clear its integration, the same way add and manualAdd already refuse to.
+      const clash = collisionSuggestion(input.providerId)
+      if (clash && clash !== input.providerId && !managed.has(input.providerId)) {
+        return {
+          message:
+            `'${input.providerId}' is the id of a built-in provider, so adding it here would take it over. ` +
+            `Use a different name, for example '${clash}'.`,
+        }
       }
       const catalog = await getCatalog()
       const site = catalog[input.site]

@@ -214,3 +214,42 @@ describe("v2 rpc wiring", () => {
     expect(noModel).toMatchObject({ status: "unknown_provider" })
   })
 })
+
+describe("catalog add guards built-in ids", () => {
+  // The catalog wizard defaults the provider id to the site id, and a site id such as
+  // "openrouter" matches a built-in provider. Without the guard the write took that
+  // provider over and cleared its integration, which add and manualAdd already refused.
+  it("refuses a provider id that matches a built-in provider", async () => {
+    const { handlers } = await registeredHandlers()
+    const result = await handlers["catalog.add"]?.({ site: "openrouter", providerId: "openrouter" })
+    expect(result).toMatchObject({ message: expect.stringContaining("built-in provider") })
+  })
+
+  it("still refuses an unknown catalog site", async () => {
+    const { handlers } = await registeredHandlers()
+    const result = await handlers["catalog.add"]?.({ site: "no-such-site", providerId: "my-proxy" })
+    expect(result).toMatchObject({ message: expect.stringContaining("not in the catalog list") })
+  })
+})
+
+describe("a failed storage read is not an empty store", () => {
+  // If the two are conflated, a transient read error empties the managed set and the
+  // next persist writes an empty object, deleting every provider the user had.
+  it("writes nothing when the initial read failed", async () => {
+    const writes: Array<{ key: string; value: unknown }> = []
+    const state = makeContext()
+    state.context.storage = {
+      get: async () => {
+        throw new Error("storage unavailable")
+      },
+      set: async (key, value) => {
+        writes.push({ key, value })
+      },
+    }
+    await setup(state.context)
+    const add = state.handlers["add"]
+    if (!add) throw new Error("add RPC was not registered")
+    await add({ providerId: "x", baseURL: "https://provider.example/v1" }).catch(() => undefined)
+    expect(writes.filter(w => w.key === "providers")).toEqual([])
+  })
+})

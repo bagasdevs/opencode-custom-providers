@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest"
+import { probedToDraftKeepingEdits, type V2ModelDraft as Draft } from "../src/v2-models.js"
 import {
   applyModelFields,
   parseTokenCount,
@@ -37,7 +38,7 @@ describe("applyModelFields reasoning", () => {
   it("removes both keys for off", () => {
     const draft: V2ModelDraft = { reasoning: true, thinkingLevelMap: { max: "max" } }
     applyModelFields(draft, { image: false, reasoning: "off" })
-    expect(draft).toStrictEqual({ capabilities: { input: ["text"] }, variants: [] })
+    expect(draft).toStrictEqual({ capabilities: { input: ["text"] }, variants: [], edited: true })
     expect("reasoning" in draft).toBe(false)
     expect("thinkingLevelMap" in draft).toBe(false)
   })
@@ -48,6 +49,7 @@ describe("applyModelFields reasoning", () => {
       reasoning: true,
       thinkingLevelMap: { low: null, medium: null, high: null },
       variants: [{ id: "minimal", label: "minimal", thinkingLevel: "minimal" }],
+      edited: true,
     })
     expect(applied("low")).toStrictEqual({
       capabilities: { input: ["text", "image"] },
@@ -57,6 +59,7 @@ describe("applyModelFields reasoning", () => {
         { id: "minimal", label: "minimal", thinkingLevel: "minimal" },
         { id: "low", label: "low", thinkingLevel: "low" },
       ],
+      edited: true,
     })
     expect(applied("medium")).toStrictEqual({
       capabilities: { input: ["text", "image"] },
@@ -67,6 +70,7 @@ describe("applyModelFields reasoning", () => {
         { id: "low", label: "low", thinkingLevel: "low" },
         { id: "medium", label: "medium", thinkingLevel: "medium" },
       ],
+      edited: true,
     })
   })
 
@@ -80,6 +84,7 @@ describe("applyModelFields reasoning", () => {
         { id: "medium", label: "medium", thinkingLevel: "medium" },
         { id: "high", label: "high", thinkingLevel: "high" },
       ],
+      edited: true,
     })
     expect("thinkingLevelMap" in applied("high")).toBe(false)
   })
@@ -96,6 +101,7 @@ describe("applyModelFields reasoning", () => {
         { id: "high", label: "high", thinkingLevel: "high" },
         { id: "xhigh", label: "xhigh", thinkingLevel: "xhigh" },
       ],
+      edited: true,
     })
     expect(applied("max").variants).toHaveLength(6)
     expect(applied("max").variants?.at(-1)).toStrictEqual({ id: "max", label: "max", thinkingLevel: "max" })
@@ -123,6 +129,7 @@ describe("applyModelFields reasoning", () => {
         { id: "low", label: "low", thinkingLevel: "low" },
         { id: "medium", label: "medium", thinkingLevel: "medium" },
       ],
+      edited: true,
     })
   })
 
@@ -227,6 +234,7 @@ describe("read then apply round trip", () => {
     expect(draft).toStrictEqual({
       capabilities: { input: ["text", "image"] },
       variants: [],
+      edited: true,
     })
     expect(readModelFields(draft)).toStrictEqual(readModelFields({}))
   })
@@ -241,6 +249,7 @@ describe("read then apply round trip", () => {
         { id: "minimal", label: "minimal", thinkingLevel: "minimal" },
         { id: "low", label: "low", thinkingLevel: "low" },
       ],
+      edited: true,
     }
     const before = structuredClone(draft)
     applyModelFields(draft, readModelFields(draft))
@@ -284,5 +293,64 @@ describe("token prompts", () => {
     expect(resolveTokenEdit(4096, { action: "clear" })).toBe(0)
     expect(resolveTokenEdit(4096, { action: "set", value: 8192 })).toBe(8192)
     expect(resolveTokenEdit(4096, null)).toBe(4096)
+  })
+})
+
+describe("token limit validation", () => {
+  // A stored value that is not a whole number used to be handed back to the editor and
+  // then persisted again, which broke the listModels output schema permanently.
+  it("reads a non-integer stored limit as unset", () => {
+    const bad = readModelFields({ limit: { context: 1.5, output: -5 } })
+    expect(bad.context).toBeUndefined()
+    expect(bad.output).toBeUndefined()
+    const worse = readModelFields({ limit: { context: Number.NaN, output: 1e15 } })
+    expect(worse.context).toBeUndefined()
+    expect(worse.output).toBeUndefined()
+  })
+
+  it("still reads a legitimate limit", () => {
+    expect(readModelFields({ limit: { context: 200000, output: 64000 } })).toMatchObject({ context: 200000, output: 64000 })
+    expect(readModelFields({ limit: { context: 0 } }).context).toBe(0)
+  })
+})
+
+describe("re-probe keeps hand edits", () => {
+  // A refresh re-probes the endpoint and used to replace the whole draft, silently
+  // reverting a tuned thinking level, image toggle, or token limit.
+  const probed = {
+    id: "gpt-4o",
+    name: "gpt-4o",
+    reasoning: true,
+    reasoningLevels: ["low", "medium", "high"],
+    context: 128000,
+    contextSource: "endpoint",
+    maxOutput: 4096,
+    maxOutputSource: "endpoint",
+    image: true,
+  }
+
+  it("keeps the editor-owned fields when the draft was edited", () => {
+    const tuned: Draft = {}
+    applyModelFields(tuned, { image: false, reasoning: "xhigh", context: 200000, output: 64000 })
+    expect(tuned.edited).toBe(true)
+
+    const after = probedToDraftKeepingEdits(tuned, probed as never)
+    expect(readModelFields(after)).toMatchObject({ image: false, reasoning: "xhigh", context: 200000, output: 64000 })
+  })
+
+  it("still takes the endpoint's values for a draft nobody edited", () => {
+    const untouched = probedToDraftKeepingEdits(undefined, probed as never)
+    expect(readModelFields(untouched)).toMatchObject({ context: 128000, output: 4096 })
+    const probed2 = { ...probed, context: 999, maxOutput: 111, contextSource: "endpoint", maxOutputSource: "endpoint" }
+    const again = probedToDraftKeepingEdits(untouched, probed2 as never)
+    expect(readModelFields(again)).toMatchObject({ context: 999, output: 111 })
+  })
+
+  it("still refreshes a field the editor does not own", () => {
+    const tuned: Draft = {}
+    applyModelFields(tuned, { image: true, reasoning: "high" })
+    const remeasured = { ...probed, context: 2000000, contextSource: "endpoint" }
+    const after = probedToDraftKeepingEdits(tuned, remeasured as never)
+    expect(readModelFields(after).context).toBe(2000000)
   })
 })

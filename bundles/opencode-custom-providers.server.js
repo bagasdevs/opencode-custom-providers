@@ -20,9 +20,10 @@ function sanitizeUrl(raw) {
     url.username = "";
     url.password = "";
     url.search = "";
+    url.hash = "";
     return url.toString();
   } catch {
-    return raw.split("?")[0];
+    return raw.split(/[?#]/)[0];
   }
 }
 function sanitizeDialogText(text) {
@@ -65,10 +66,17 @@ function schemelessHostIsLocal(raw) {
   const second = octets[2] === void 0 ? void 0 : Number(octets[2]);
   return first === 127 || first === 10 || first === 192 && second === 168 || first === 172 && second !== void 0 && second >= 16 && second <= 31;
 }
+function schemelessHostIsPlausible(raw) {
+  if (schemelessHostIsLocal(raw)) return true;
+  const host = raw.split(/[/?#]/, 1)[0];
+  const name = host.split(":", 1)[0];
+  return /^[a-zA-Z0-9-]+(?:\.[a-zA-Z0-9-]+)+$/.test(name);
+}
 function normalizeBaseUrl(raw) {
   let candidate = raw.trim();
   if (candidate === "") return candidate;
   if (!/^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(candidate)) {
+    if (!schemelessHostIsPlausible(candidate)) return candidate;
     candidate = `${schemelessHostIsLocal(candidate) ? "http" : "https"}://${candidate}`;
   }
   candidate = candidate.replace(/\/+$/, "");
@@ -1288,7 +1296,7 @@ function validateProviderId(providerId) {
 function validateAddProviderParams(params, existingProviders) {
   const idError = validateProviderId(params.providerId);
   if (idError) return idError;
-  if (!isValidUrl(params.baseURL)) {
+  if (!isValidUrl(normalizeBaseUrl(params.baseURL))) {
     return "Invalid Base URL. Please enter a full URL (including https://).";
   }
   if (existingProviders[params.providerId] && !params.overwrite) {
@@ -1298,7 +1306,7 @@ function validateAddProviderParams(params, existingProviders) {
 }
 async function addProvider(params) {
   const displayStyle = params.displayStyle ?? "slug";
-  const baseURL = params.baseURL.trim().replace(/\/+$/, "");
+  const baseURL = normalizeBaseUrl(params.baseURL).replace(/\/+$/, "");
   try {
     const models = await discoverAndEnrich(baseURL, params.apiKey, displayStyle, params.flavor ?? DEFAULT_FLAVOR);
     const modelCount = Object.keys(models).length;
@@ -1496,6 +1504,17 @@ function probedToDraft(probed, displayStyle = "slug") {
   applyEnrichedToDraft(draft, probedToEnriched(probed, displayStyle));
   return draft;
 }
+var EDITOR_OWNED = ["capabilities", "limit", "reasoning", "thinkingLevelMap", "variants", "edited"];
+function probedToDraftKeepingEdits(existing, probed, displayStyle = "slug") {
+  const fresh = probedToDraft(probed, displayStyle);
+  if (!existing || existing.edited !== true) return fresh;
+  const kept = { ...fresh };
+  const source = existing;
+  for (const key of EDITOR_OWNED) {
+    if (source[key] !== void 0) kept[key] = source[key];
+  }
+  return kept;
+}
 function mergeDiscoveredIntoStored(target, fresh) {
   for (const [key, value] of Object.entries(fresh)) {
     if (value === void 0) continue;
@@ -1570,6 +1589,10 @@ function ceilingFromVariants(draft) {
   }
   return best;
 }
+var MAX_TOKEN_LIMIT = 1e8;
+function validTokenLimit(value) {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 && value <= MAX_TOKEN_LIMIT;
+}
 function readModelFields(draft) {
   const input = draft.capabilities?.input;
   const limit = draft.limit;
@@ -1577,8 +1600,10 @@ function readModelFields(draft) {
   return {
     image: Array.isArray(input) ? input.includes("image") : true,
     reasoning: draft.reasoning === true || fromVariants !== void 0 ? fromVariants ?? ceilingFromMap(readMap(draft)) : "off",
-    context: typeof limit?.context === "number" ? limit.context : void 0,
-    output: typeof limit?.output === "number" ? limit.output : void 0
+    // A stored value that is not a whole number reads as unset, so the editor shows
+    // it as unset instead of carrying the bad value forward.
+    context: validTokenLimit(limit?.context) ? limit.context : void 0,
+    output: validTokenLimit(limit?.output) ? limit.output : void 0
   };
 }
 function applyModelFields(draft, fields) {
@@ -1593,6 +1618,7 @@ function applyModelFields(draft, fields) {
     else delete draft.thinkingLevelMap;
   }
   draft.variants = variantsForCeiling(fields.reasoning);
+  draft.edited = true;
   const setContext = typeof fields.context === "number" && fields.context > 0;
   const setOutput = typeof fields.output === "number" && fields.output > 0;
   if (!setContext && !setOutput && !draft.limit) return;
@@ -1752,7 +1778,12 @@ function parseManaged(raw) {
   return result;
 }
 var setup = async (ctx) => {
-  const managed = parseManaged(await ctx.storage.get(STORAGE_KEY).catch(() => void 0));
+  let loaded = true;
+  const raw = await ctx.storage.get(STORAGE_KEY).catch(() => {
+    loaded = false;
+    return void 0;
+  });
+  const managed = parseManaged(raw);
   const removed = new Set(await ctx.storage.get(REMOVED_KEY).catch(() => void 0) ?? []);
   const candidates = /* @__PURE__ */ new Map();
   const discovered = /* @__PURE__ */ new Map();
@@ -1775,6 +1806,7 @@ var setup = async (ctx) => {
     await ctx.storage.set(REMOVED_KEY, [...removed]);
   };
   const persist = async () => {
+    if (!loaded) throw new Error("The saved provider list could not be read, so nothing was written. Restart opencode and try again.");
     await ctx.storage.set(
       STORAGE_KEY,
       Object.fromEntries(
@@ -1887,7 +1919,7 @@ var setup = async (ctx) => {
   };
   const applyModels = async (providerId, fresh, displayStyle) => {
     const models = modelsFor(providerId);
-    for (const probed of fresh) models.set(probed.id, probedToDraft(probed, displayStyle));
+    for (const probed of fresh) models.set(probed.id, probedToDraftKeepingEdits(models.get(probed.id), probed, displayStyle));
     await persist();
     await ctx.provider.reload();
   };
@@ -1912,7 +1944,7 @@ var setup = async (ctx) => {
       }
       const models = modelsFor(candidate.providerId);
       const before = fingerprint(models);
-      for (const probed of fresh) models.set(probed.id, probedToDraft(probed, candidate.displayStyle));
+      for (const probed of fresh) models.set(probed.id, probedToDraftKeepingEdits(models.get(probed.id), probed, candidate.displayStyle));
       if (fingerprint(models) === before) outcome.unchanged.push(candidate.providerId);
       else outcome.updated.push(candidate.providerId);
       changed = true;
@@ -2156,9 +2188,9 @@ Technical detail: ${sanitizeErrorMessage(error)}`
           };
         }
       } else if (input.displayStyle !== void 0) {
-        const raw = lastProbeModels.get(input.providerId);
-        if (raw) {
-          await applyModels(input.providerId, raw, next.displayStyle ?? "slug");
+        const raw2 = lastProbeModels.get(input.providerId);
+        if (raw2) {
+          await applyModels(input.providerId, raw2, next.displayStyle ?? "slug");
         } else {
           const candidate = {
             providerId: input.providerId,
@@ -2199,15 +2231,16 @@ Technical detail: ${sanitizeErrorMessage(error)}` };
         message: "",
         models: [...models.entries()].map(([modelId, draft]) => {
           const fields = readModelFields(draft);
-          return {
+          const row = {
             id: modelId,
             name: typeof draft.name === "string" && draft.name ? draft.name : modelId,
             reasoning: fields.reasoning,
             reasoningLabel: reasoningLabel(fields.reasoning),
-            image: fields.image,
-            context: fields.context,
-            output: fields.output
+            image: fields.image
           };
+          if (fields.context !== void 0) row.context = fields.context;
+          if (fields.output !== void 0) row.output = fields.output;
+          return row;
         }).sort((a, b) => a.id.localeCompare(b.id))
       };
     },
@@ -2222,6 +2255,14 @@ Technical detail: ${sanitizeErrorMessage(error)}` };
       }
       if (input.reasoning !== void 0 && !REASONING_LEVELS.includes(input.reasoning)) {
         return { status: "invalid", message: `'${input.reasoning}' is not a reasoning level. Pick one from the list.` };
+      }
+      for (const [field, value] of [
+        ["context", input.context],
+        ["output", input.output]
+      ]) {
+        if (value !== void 0 && (!Number.isSafeInteger(value) || value < 0 || value > MAX_TOKEN_LIMIT)) {
+          return { status: "invalid", message: `The ${field} limit must be a whole number of tokens up to ${MAX_TOKEN_LIMIT}, or 0 to clear it.` };
+        }
       }
       const current = readModelFields(draft);
       const next = {
@@ -2398,6 +2439,12 @@ Fix with /edit-provider (check the address and the API key), then run /reload-mo
     catalogAdd: async (input) => {
       if (!validId(input.providerId)) {
         return { message: "The provider name may only contain letters, numbers, hyphens and underscores. Example: my-proxy" };
+      }
+      const clash = collisionSuggestion(input.providerId);
+      if (clash && clash !== input.providerId && !managed.has(input.providerId)) {
+        return {
+          message: `'${input.providerId}' is the id of a built-in provider, so adding it here would take it over. Use a different name, for example '${clash}'.`
+        };
       }
       const catalog = await getCatalog();
       const site = catalog[input.site];
@@ -2713,7 +2760,7 @@ Technical detail: ${sanitizeErrorMessage(error)}`);
         required: ["providerId", "baseURL"],
         additionalProperties: false
       },
-      execute: async (raw) => ({ content: (await ops.add(raw)).message })
+      execute: async (raw2) => ({ content: (await ops.add(raw2)).message })
     });
     tools.add({
       name: "manual-add-models",
@@ -2736,8 +2783,8 @@ Technical detail: ${sanitizeErrorMessage(error)}`);
         required: ["providerId", "baseURL", "modelIds"],
         additionalProperties: false
       },
-      execute: async (raw) => ({
-        content: (await ops.manualAdd(raw)).message
+      execute: async (raw2) => ({
+        content: (await ops.manualAdd(raw2)).message
       })
     });
     tools.add({
@@ -2749,7 +2796,7 @@ Technical detail: ${sanitizeErrorMessage(error)}`);
         required: ["providerId"],
         additionalProperties: false
       },
-      execute: async (raw) => ({ content: (await ops.reprobe(raw.providerId)).message })
+      execute: async (raw2) => ({ content: (await ops.reprobe(raw2.providerId)).message })
     });
     tools.add({
       name: "apply-reconcile",
@@ -2763,8 +2810,8 @@ Technical detail: ${sanitizeErrorMessage(error)}`);
         required: ["providerId", "decisions"],
         additionalProperties: false
       },
-      execute: async (raw) => ({
-        content: (await ops.apply(raw)).message
+      execute: async (raw2) => ({
+        content: (await ops.apply(raw2)).message
       })
     });
     tools.add({
@@ -2782,7 +2829,7 @@ Technical detail: ${sanitizeErrorMessage(error)}`);
         required: ["site", "providerId"],
         additionalProperties: false
       },
-      execute: async (raw) => ({ content: (await ops.catalogAdd(raw)).message })
+      execute: async (raw2) => ({ content: (await ops.catalogAdd(raw2)).message })
     });
     tools.add({
       name: "delete-provider",
@@ -2793,7 +2840,7 @@ Technical detail: ${sanitizeErrorMessage(error)}`);
         required: ["providerId"],
         additionalProperties: false
       },
-      execute: async (raw) => ({ content: (await ops.remove(raw.providerId)).message })
+      execute: async (raw2) => ({ content: (await ops.remove(raw2.providerId)).message })
     });
   });
   await ctx.provider.reload();

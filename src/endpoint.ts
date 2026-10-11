@@ -35,12 +35,25 @@ function schemelessHostIsLocal(raw: string): boolean {
   )
 }
 
+/** A schemeless input is only worth repairing when it plausibly names a host: either a
+ * local one, or a name with a dot. Without this, a nonsense string such as "notaurl"
+ * would be turned into "https://notaurl" and then pass validation. */
+function schemelessHostIsPlausible(raw: string): boolean {
+  if (schemelessHostIsLocal(raw)) return true
+  const host = raw.split(/[/?#]/, 1)[0]
+  const name = host.split(":", 1)[0]
+  return /^[a-zA-Z0-9-]+(?:\.[a-zA-Z0-9-]+)+$/.test(name)
+}
+
 /** Infer the scheme for a bare host, strip a trailing "/" and a pasted
  * endpoint path, and leave an already-valid base URL untouched. */
 export function normalizeBaseUrl(raw: string): string {
   let candidate = raw.trim()
   if (candidate === "") return candidate
   if (!/^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(candidate)) {
+    // Leave an implausible input alone so validation can reject it, rather than
+    // inventing a scheme for something that is not a host at all.
+    if (!schemelessHostIsPlausible(candidate)) return candidate
     candidate = `${schemelessHostIsLocal(candidate) ? "http" : "https"}://${candidate}`
   }
   candidate = candidate.replace(/\/+$/, "")

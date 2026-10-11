@@ -129,9 +129,10 @@ function sanitizeUrl(raw) {
     url.username = "";
     url.password = "";
     url.search = "";
+    url.hash = "";
     return url.toString();
   } catch {
-    return raw.split("?")[0];
+    return raw.split(/[?#]/)[0];
   }
 }
 function sanitizeDialogText(text) {
@@ -530,7 +531,15 @@ async function wizardCatalogAdd(ctx) {
     title: "Which models? (optional)",
     description: "Type model names separated by commas, for example claude-sonnet-4-5, gpt-4o. Leave empty to add every model this provider offers: that is the safe choice."
   });
+  if (models === void 0) {
+    cancelled(ctx);
+    return;
+  }
   const apiKey = await askApiKey(ctx, "API key for this provider (paste it if you have one)");
+  if (apiKey === void 0) {
+    cancelled(ctx);
+    return;
+  }
   const { message } = await call(ctx, "catalog.add", {
     site,
     providerId,
@@ -633,7 +642,8 @@ This cannot be undone. Your other opencode settings are not touched. You can add
     return;
   }
   const { message } = await call(ctx, "remove", { providerId: provider.id });
-  done(ctx, message);
+  if (/^There is no provider named/.test(message)) fail(ctx, message);
+  else done(ctx, message);
 }
 async function wizardRefresh(ctx) {
   const { message } = await call(ctx, "refresh");
@@ -706,6 +716,50 @@ function normalizeModelId(id3) {
     normalized = normalized.slice(slashIndex + 1);
   }
   return normalized.replaceAll(":", "-");
+}
+var ENDPOINT_PATH_SUFFIXES = ["/chat/completions", "/messages", "/responses", "/models"];
+function schemelessHostIsLocal(raw) {
+  const host = raw.split(/[/?#]/, 1)[0];
+  if (host.startsWith("[")) return true;
+  if (/^::1($|:)/.test(host)) return true;
+  const name = host.split(":", 1)[0];
+  if (/^localhost$/i.test(name) || /\.local$/i.test(name)) return true;
+  if (name === "0.0.0.0") return true;
+  const octets = /^(\d{1,3})(?:\.(\d{1,3}))?(?:\.\d{1,3}){0,2}$/.exec(name);
+  if (!octets) return false;
+  const first = Number(octets[1]);
+  const second = octets[2] === void 0 ? void 0 : Number(octets[2]);
+  return first === 127 || first === 10 || first === 192 && second === 168 || first === 172 && second !== void 0 && second >= 16 && second <= 31;
+}
+function schemelessHostIsPlausible(raw) {
+  if (schemelessHostIsLocal(raw)) return true;
+  const host = raw.split(/[/?#]/, 1)[0];
+  const name = host.split(":", 1)[0];
+  return /^[a-zA-Z0-9-]+(?:\.[a-zA-Z0-9-]+)+$/.test(name);
+}
+function normalizeBaseUrl(raw) {
+  let candidate = raw.trim();
+  if (candidate === "") return candidate;
+  if (!/^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(candidate)) {
+    if (!schemelessHostIsPlausible(candidate)) return candidate;
+    candidate = `${schemelessHostIsLocal(candidate) ? "http" : "https"}://${candidate}`;
+  }
+  candidate = candidate.replace(/\/+$/, "");
+  const schemeEnd = candidate.indexOf("://");
+  if (candidate.indexOf("/", schemeEnd + 3) === -1) return candidate;
+  let changed = true;
+  while (changed) {
+    changed = false;
+    const lower = candidate.toLowerCase();
+    for (const suffix of ENDPOINT_PATH_SUFFIXES) {
+      if (lower.endsWith(suffix)) {
+        candidate = candidate.slice(0, candidate.length - suffix.length).replace(/\/+$/, "");
+        changed = true;
+        break;
+      }
+    }
+  }
+  return candidate;
 }
 async function fetchEndpointModels(baseURL, apiKey) {
   if (!isValidUrl(baseURL)) return [];
@@ -1819,7 +1873,7 @@ function validateProviderId(providerId) {
 function validateAddProviderParams(params, existingProviders) {
   const idError = validateProviderId(params.providerId);
   if (idError) return idError;
-  if (!isValidUrl(params.baseURL)) {
+  if (!isValidUrl(normalizeBaseUrl(params.baseURL))) {
     return "Invalid Base URL. Please enter a full URL (including https://).";
   }
   if (existingProviders[params.providerId] && !params.overwrite) {
@@ -1829,7 +1883,7 @@ function validateAddProviderParams(params, existingProviders) {
 }
 async function addProvider(params) {
   const displayStyle = params.displayStyle ?? "slug";
-  const baseURL = params.baseURL.trim().replace(/\/+$/, "");
+  const baseURL = normalizeBaseUrl(params.baseURL).replace(/\/+$/, "");
   try {
     const models = await discoverAndEnrich(baseURL, params.apiKey, displayStyle, params.flavor ?? DEFAULT_FLAVOR);
     const modelCount = Object.keys(models).length;
@@ -2443,7 +2497,7 @@ ${describeProbed(fresh)}` : "";
         if (action === "endpoint") {
           const raw = await showPrompt(api, "Base URL", provider.options?.baseURL);
           if (!raw) return;
-          const baseURL = raw.trim().replace(/\/+$/, "");
+          const baseURL = normalizeBaseUrl(raw).replace(/\/+$/, "");
           if (!isValidUrl(baseURL)) {
             api.ui.toast({ message: "Invalid Base URL.", variant: "error" });
             return;

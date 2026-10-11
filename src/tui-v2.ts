@@ -485,7 +485,15 @@ async function wizardCatalogAdd(ctx: V2TuiContext): Promise<void> {
       "Type model names separated by commas, for example claude-sonnet-4-5, gpt-4o. " +
       "Leave empty to add every model this provider offers: that is the safe choice.",
   })
+  if (models === undefined) {
+    cancelled(ctx)
+    return
+  }
   const apiKey = await askApiKey(ctx, "API key for this provider (paste it if you have one)")
+  if (apiKey === undefined) {
+    cancelled(ctx)
+    return
+  }
   const { message } = await call<{ message: string }>(ctx, "catalog.add", {
     site,
     providerId,
@@ -591,7 +599,11 @@ async function wizardDelete(ctx: V2TuiContext): Promise<void> {
     return
   }
   const { message } = await call<{ message: string }>(ctx, "remove", { providerId: provider.id })
-  done(ctx, message)
+  // remove reports a failure in its message rather than by throwing, so a missing
+  // provider would otherwise be announced with a success toast. The provider list was
+  // just read, so this only happens when it changed underneath us.
+  if (/^There is no provider named/.test(message)) fail(ctx, message)
+  else done(ctx, message)
 }
 
 async function wizardRefresh(ctx: V2TuiContext): Promise<void> {

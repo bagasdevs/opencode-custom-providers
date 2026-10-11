@@ -98,6 +98,18 @@ function ceilingFromVariants(draft: V2ModelDraft): ReasoningLevel | undefined {
   return best
 }
 
+/** The largest token limit worth storing. Well above any real context window, but low
+ * enough to catch a mistyped digit count that would otherwise reach the host as a
+ * real limit. */
+export const MAX_TOKEN_LIMIT = 100_000_000
+
+/** A token limit must be a whole number of tokens within a sane range. Anything else
+ * is a typo, and a bad value gets persisted and then breaks the listModels output
+ * schema, which rejects a non-number. Zero is allowed: it means "clear". */
+function validTokenLimit(value: unknown): value is number {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 && value <= MAX_TOKEN_LIMIT
+}
+
 /** Read the editable fields out of a draft, permissively: a draft that names no
  * field reads as image on, reasoning off, both limits unset. */
 export function readModelFields(draft: V2ModelDraft): ModelFields {
@@ -111,8 +123,10 @@ export function readModelFields(draft: V2ModelDraft): ModelFields {
     reasoning: draft.reasoning === true || fromVariants !== undefined
       ? (fromVariants ?? ceilingFromMap(readMap(draft)))
       : "off",
-    context: typeof limit?.context === "number" ? limit.context : undefined,
-    output: typeof limit?.output === "number" ? limit.output : undefined,
+    // A stored value that is not a whole number reads as unset, so the editor shows
+    // it as unset instead of carrying the bad value forward.
+    context: validTokenLimit(limit?.context) ? limit.context : undefined,
+    output: validTokenLimit(limit?.output) ? limit.output : undefined,
   }
 }
 
@@ -131,6 +145,8 @@ export function applyModelFields(draft: V2ModelDraft, fields: ModelFields): void
     else delete draft.thinkingLevelMap
   }
   draft.variants = variantsForCeiling(fields.reasoning)
+  // Marks the draft as hand-edited, so a later re-probe knows not to overwrite it.
+  draft.edited = true
 
   // 0 is the clear signal from the token prompts, same as leaving a field out.
   const setContext = typeof fields.context === "number" && fields.context > 0
