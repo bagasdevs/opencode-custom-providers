@@ -455,3 +455,53 @@ describe("v2 catalog add cancellation", () => {
   })
 })
 
+describe("v2 per-model review", () => {
+  // The review loop is the riskiest new code: it can delete a model. These pin the two
+  // invariants a unit test can reach with a fake dialog: Esc writes nothing, and a mixed
+  // run sends exactly the decisions the user made, in one apply call.
+  async function runReview(state: ReturnType<typeof makeContext>): Promise<void> {
+    setup(state.context)
+    const command = state.getLayer()?.commands?.find(item => item.slash?.name === "review-model-changes")
+    if (!command) throw new Error("review-model-changes command was not registered")
+    await command.run()
+  }
+
+  it("writes nothing when Esc is pressed during the per-model review", async () => {
+    const state = makeContext(
+      [
+        { message: "Found 2 models at the provider (2 changed).", changes: [
+          { id: "model-a", kind: "updated", detail: "context 128000 -> 1000000" },
+          { id: "model-b", kind: "added", detail: "model-b: new model" },
+        ] },
+      ],
+      [],
+      ["my-proxy", "review", undefined],
+      [{ id: "my-proxy", models: 2 }],
+    )
+    await runReview(state)
+    expect(state.calls.some(call => call.method === "apply")).toBe(false)
+    expect(state.toasts.some(toast => /Cancelled/i.test(toast.message))).toBe(true)
+  })
+
+  it("sends one apply call carrying only the decisions the user made", async () => {
+    const state = makeContext(
+      [
+        { message: "Found 2 models at the provider (2 changed).", changes: [
+          { id: "model-a", kind: "updated", detail: "context 128000 -> 1000000" },
+          { id: "model-b", kind: "added", detail: "model-b: new model" },
+        ] },
+        { message: "Done." },
+      ],
+      [],
+      ["my-proxy", "review", "apply", "keep"],
+      [{ id: "my-proxy", models: 2 }],
+    )
+    await runReview(state)
+    const applies = state.calls.filter(call => call.method === "apply")
+    expect(applies).toHaveLength(1)
+    expect(JSON.parse(String((applies[0]?.input as { decisions?: string })?.decisions))).toEqual({
+      "model-a": "apply",
+      "model-b": "keep",
+    })
+  })
+})

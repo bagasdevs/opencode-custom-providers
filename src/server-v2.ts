@@ -1049,7 +1049,20 @@ if ((managed.has(input.providerId) || candidates.has(input.providerId)) && !inpu
         return { message: `The provider listed no models.\n${zeroModelsHint(Boolean(await credentialKey(providerId) ?? candidate.apiKey))}\n\nStored models were kept, so nothing broke.` }
       }
       // Field-level diff, so a metadata change upstream is not reported as "up to date".
-      const current = Object.fromEntries(storedModels.get(providerId) ?? new Map<string, EnrichedModel>())
+      //
+      // storedModels is filled only by a successful transform replay. When that replay failed
+      // the map is empty, and diffing against an empty baseline reported every stored model as
+      // "new", inviting the user to apply changes they had already applied. Better to say the
+      // snapshot is stale than to invent a diff.
+      const baseline = storedModels.get(providerId)
+      if (!baseline) {
+        return {
+          message:
+            `Found ${fresh.models.length} model${fresh.models.length === 1 ? "" : "s"} at the provider, but opencode's in-memory list could not be read, so there is nothing to compare against.\n` +
+            "Restart opencode and run this again, or use 'Apply everything' which does not need the comparison.",
+        }
+      }
+      const current = Object.fromEntries(baseline)
       const changes = diffModels(current, fresh.models, candidate.displayStyle)
       const added = changes.filter(change => change.kind === "added")
       const updated = changes.filter(change => change.kind === "updated")

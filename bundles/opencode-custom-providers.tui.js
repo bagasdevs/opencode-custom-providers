@@ -586,11 +586,9 @@ async function wizardReprobe(ctx) {
 async function wizardApplyReconcile(ctx) {
   const provider = await pickProvider(ctx);
   if (!provider) return;
-  const probe = await call(ctx, "reprobe", {
-    providerId: provider.id
-  });
+  const probe = await call(ctx, "reprobe", { providerId: provider.id });
   const { message } = probe;
-  const changes = probe.changes ?? [];
+  const changes = Array.isArray(probe.changes) ? probe.changes : [];
   await ctx.ui.dialog.alert({ title: `What was found for ${provider.id}`, message });
   const options = [
     {

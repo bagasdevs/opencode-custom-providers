@@ -2,7 +2,7 @@ import { FLAVORS, collisionSuggestion } from "./flavors.js"
 import { parseTokenEdit, REASONING_LEVELS, reasoningLabel, resolveTokenEdit, type TokenEdit } from "./model-fields.js"
 import { isValidUrl, sanitizeDialogText } from "./security.js"
 import { id as pluginId } from "./ids.js"
-import type { AddProviderResult, ManualAddResult, ProviderRow, SiteRow } from "./server-v2.js"
+import type { AddProviderResult, ManualAddResult, ProviderRow, ReprobeResult, SiteRow } from "./server-v2.js"
 
 export const id = `${pluginId}.tui`
 
@@ -546,11 +546,13 @@ async function wizardApplyReconcile(ctx: V2TuiContext): Promise<void> {
   if (!provider) return
   // `changes` is the structured per-model diff; it is only present when the probe
   // succeeded, so its absence (or emptiness) means there is nothing to review.
-  const probe = await call<{ message: string; changes?: { id: string; kind: string; detail: string }[] }>(ctx, "reprobe", {
-    providerId: provider.id,
-  })
+  // ReprobeResult keeps `kind` as the union instead of widening it to string, which is what
+  // makes the kind-aware wording below type-safe.
+  const probe = await call<ReprobeResult>(ctx, "reprobe", { providerId: provider.id })
   const { message } = probe
-  const changes = probe.changes ?? []
+  // A non-array would make `changes.length > 0` true for a string and iterate its
+  // characters, producing decisions keyed "undefined".
+  const changes = Array.isArray(probe.changes) ? probe.changes : []
   // Show what was found first: the select dialog cannot be trusted to display a long placeholder.
   await ctx.ui.dialog.alert({ title: `What was found for ${provider.id}`, message })
   // Review first, then the all-or-nothing pair, and keep before apply. The plan in

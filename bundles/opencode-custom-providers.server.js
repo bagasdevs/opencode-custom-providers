@@ -2379,7 +2379,14 @@ ${zeroModelsHint(Boolean(await credentialKey(providerId) ?? candidate.apiKey))}
 
 Stored models were kept, so nothing broke.` };
       }
-      const current = Object.fromEntries(storedModels.get(providerId) ?? /* @__PURE__ */ new Map());
+      const baseline = storedModels.get(providerId);
+      if (!baseline) {
+        return {
+          message: `Found ${fresh.models.length} model${fresh.models.length === 1 ? "" : "s"} at the provider, but opencode's in-memory list could not be read, so there is nothing to compare against.
+Restart opencode and run this again, or use 'Apply everything' which does not need the comparison.`
+        };
+      }
+      const current = Object.fromEntries(baseline);
       const changes = diffModels(current, fresh.models, candidate.displayStyle);
       const added = changes.filter((change) => change.kind === "added");
       const updated = changes.filter((change) => change.kind === "updated");
