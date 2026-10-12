@@ -8,8 +8,8 @@ Add your own AI model providers to OpenCode with a few questions. The plugin fin
 models for you, and you can change or remove them later from the same menu.
 
 Supported API types: OpenAI-compatible (most services), OpenAI Responses, Google Gemini,
-and Ollama. Models are found automatically for these. Anthropic (Claude) cannot list its
-models, so add them from the built-in catalog.
+and Ollama. Models are found automatically for these. For Anthropic (Claude), pick models
+from the built-in list or add them by name.
 
 | If you use | Install | Menu |
 | --- | --- | --- |
