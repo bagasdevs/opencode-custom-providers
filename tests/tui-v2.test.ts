@@ -71,7 +71,7 @@ describe("v2 add recovery", () => {
         { status: "ok", message: "ready" },
       ],
       [...initialPrompts],
-      ["add", "openai-chat", "slug", "retry"],
+      ["add", "own", "openai-chat", "slug", "retry"],
     )
 
     await runAdd(state)
@@ -88,7 +88,7 @@ describe("v2 add recovery", () => {
         { status: "ok", message: "added" },
       ],
       [...initialPrompts, "model-a, model-b"],
-      ["add", "openai-chat", "slug", "manual"],
+      ["add", "own", "openai-chat", "slug", "manual"],
     )
 
     await runAdd(state)
@@ -109,7 +109,7 @@ describe("v2 add recovery", () => {
     const state = makeContext(
       [{ status: "unreachable", message: "failed" }],
       [...initialPrompts],
-      ["add", "openai-chat", "slug", "cancel"],
+      ["add", "own", "openai-chat", "slug", "cancel"],
     )
 
     await runAdd(state)
@@ -126,7 +126,7 @@ describe("v2 add recovery", () => {
         { status: "ok", message: "added" },
       ],
       [...initialPrompts, "", "model-a"],
-      ["add", "openai-chat", "slug", "manual"],
+      ["add", "own", "openai-chat", "slug", "manual"],
     )
 
     await runAdd(state)
@@ -141,7 +141,7 @@ describe("v2 add guards", () => {
     const state = makeContext(
       [{ status: "ok", message: "ready" }],
       ["my-proxy", "bagas.up.railway.app/v1", ""],
-      ["add", "openai-chat", "slug"],
+      ["add", "own", "openai-chat", "slug"],
     )
     await runAdd(state)
     const add = state.calls.find(c => c.method === "add")
@@ -152,7 +152,7 @@ describe("v2 add guards", () => {
     const state = makeContext(
       [{ status: "ok", message: "ready" }],
       ["local", "localhost:11434", ""],
-      ["add", "ollama", "slug"],
+      ["add", "own", "ollama", "slug"],
     )
     await runAdd(state)
     expect(state.calls.find(c => c.method === "add")?.input).toMatchObject({ baseURL: "http://localhost:11434" })
@@ -162,7 +162,7 @@ describe("v2 add guards", () => {
     const state = makeContext(
       [{ status: "ok", message: "ready" }],
       ["taken", "https://provider.example/v1", ""],
-      ["add", "openai-chat", "slug"],
+      ["add", "own", "openai-chat", "slug"],
       [{ id: "taken", models: 12 }],
     )
     await runAdd(state)
@@ -173,7 +173,7 @@ describe("v2 add guards", () => {
     const state = makeContext(
       [{ status: "ok", message: "ready" }],
       ["taken", "https://provider.example/v1", ""],
-      ["add", "openai-chat", "slug"],
+      ["add", "own", "openai-chat", "slug"],
       [{ id: "taken", models: 12 }],
     )
     state.confirmValues.push(false)
@@ -185,7 +185,7 @@ describe("v2 add guards", () => {
     const state = makeContext(
       [{ status: "confirm_endpoint_reuse", usedBy: ["other"], message: "already used" }, { status: "ok", message: "ready" }],
       ["mine", "https://shared.example/v1", ""],
-      ["add", "openai-chat", "slug"],
+      ["add", "own", "openai-chat", "slug"],
     )
     state.confirmValues.push(true)
     await runAdd(state)
@@ -199,7 +199,7 @@ describe("v2 add guards", () => {
     const state = makeContext(
       [{ status: "ok", message: "added" }],
       ["claude", "https://api.anthropic.com/v1", "", "claude-sonnet-5"],
-      ["add", "anthropic", "slug"],
+      ["add", "own", "anthropic", "slug"],
     )
     await runAdd(state)
     // This flavour cannot list models, so the wizard must never call the network add...
@@ -251,7 +251,7 @@ describe("v2 command surface", () => {
 })
 
 describe("v2 hub", () => {
-  // One command replaces eight, so the menu has to offer each action, route to its wizard,
+  // One command replaces the separate flows, so the menu has to offer each action, route to its wizard,
   // and come back afterwards. These lock that contract.
 
   const runHub = async (state: ReturnType<typeof makeContext>): Promise<void> => {
@@ -261,21 +261,27 @@ describe("v2 hub", () => {
     await command.run()
   }
 
-  it("offers all eight actions in one flat menu", async () => {
+  it("offers five actions in one flat menu, with one add entry", async () => {
     const state = makeContext([], [], [undefined], [{ id: "my-proxy", models: 2 }])
     await runHub(state)
     const menu = state.selectOptions.find(o => o.title === "Custom providers")
     expect(menu?.options?.map(o => o.value)).toEqual([
-      "list", "add", "catalog", "edit", "delete", "reprobe", "review", "reload",
+      "list", "add", "edit", "delete", "reload",
     ])
     // Flat, so no entry is a submenu: every one names a concrete action.
     expect(menu?.options?.every(o => o.title.length > 0)).toBe(true)
   })
 
+  it("asks where a new provider comes from before the wizard", async () => {
+    const state = makeContext([], [], ["add", "own", "catalog", undefined], [{ id: "my-proxy", models: 2 }])
+    await runHub(state)
+    expect(state.selectOptions.some(o => o.title === "Add a provider > Where is it from?")).toBe(true)
+  })
+
   it("routes List my providers to the list wizard", async () => {
     const state = makeContext([{ providers: [{ id: "my-proxy", baseURL: "u", flavor: "openai-chat", displayStyle: "slug", models: 2, pending: 0 }] }], [], ["list", undefined], [])
     await runHub(state)
-    expect(state.alerts.some(a => a.title === "Your custom providers")).toBe(true)
+    expect(state.alerts.some(a => a.title === "List my providers")).toBe(true)
   })
 
   it("routes Reload all models to refresh", async () => {
@@ -284,16 +290,52 @@ describe("v2 hub", () => {
     expect(state.calls.some(c => c.method === "refresh")).toBe(true)
   })
 
-  it("routes Check for new models to the provider picker", async () => {
-    const state = makeContext([], [], ["reprobe", "my-proxy", undefined], [{ id: "my-proxy", models: 2 }])
-    await runHub(state)
-    expect(state.calls.some(c => c.method === "reprobe")).toBe(true)
-  })
 
   it("routes Edit a provider to the edit menu", async () => {
     const state = makeContext([], [], ["edit", "my-proxy", undefined, undefined], [{ id: "my-proxy", models: 2 }])
     await runHub(state)
-    expect(state.selectOptions.some(o => /What do you want to change/.test(o.title))).toBe(true)
+    expect(state.selectOptions.some(o => /> What to change$/.test(o.title))).toBe(true)
+  })
+
+  it("lists 'Add models manually' in the edit menu", async () => {
+    const state = makeContext([], [], ["edit", "my-proxy", undefined, undefined], [{ id: "my-proxy", models: 2 }])
+    await runHub(state)
+    const menu = state.selectOptions.find(o => /> What to change$/.test(o.title))
+    expect(menu?.options?.some(option => option.title === "Add models manually" && option.value === "addManual")).toBe(true)
+  })
+
+  it("sends typed ids to addModelIds from the edit menu", async () => {
+    const state = makeContext(
+      [{ status: "ok", message: "Added 2 models to 'my-proxy'.", added: 2, skipped: 0 }],
+      ["gpt-4o, gpt-4o-mini"],
+      ["edit", "my-proxy", "addManual", undefined],
+      [{ id: "my-proxy", models: 2 }],
+    )
+    await runHub(state)
+    const add = state.calls.find(c => c.method === "addModelIds")
+    expect(add?.input).toEqual({ providerId: "my-proxy", modelIds: "gpt-4o, gpt-4o-mini" })
+    expect(state.toasts.some(t => t.message === "Added 2 models to 'my-proxy'.")).toBe(true)
+  })
+
+  it("clears the API key after a confirm when the key is submitted empty", async () => {
+    const state = makeContext(
+      [{ message: "Cleared the API key for 'my-proxy'. The provider will be called without a key." }],
+      [""],
+      ["edit", "my-proxy", "apiKey", undefined],
+      [{ id: "my-proxy", models: 2 }],
+    )
+    state.confirmValues.push(true)
+    await runHub(state)
+    expect(state.calls.some(c => c.method === "clearKey" && (c.input as { providerId: string }).providerId === "my-proxy")).toBe(true)
+    expect(state.calls.some(c => c.method === "edit")).toBe(false)
+    expect(state.toasts.some(t => t.message.startsWith("Cleared the API key for"))).toBe(true)
+  })
+
+  it("does not clear the API key when the confirm is declined", async () => {
+    const state = makeContext([], [""], ["edit", "my-proxy", "apiKey", undefined], [{ id: "my-proxy", models: 2 }])
+    state.confirmValues.push(false)
+    await runHub(state)
+    expect(state.calls.some(c => c.method === "clearKey")).toBe(false)
   })
 
   it("routes Delete a provider to the confirm, and writes nothing when it is declined", async () => {
@@ -307,17 +349,28 @@ describe("v2 hub", () => {
   })
 
   it("deletes the provider once the confirm is accepted", async () => {
-    const state = makeContext([{ message: "Removed 'my-proxy' and its 2 models." }], [], ["delete", "my-proxy", undefined], [{ id: "my-proxy", models: 2 }])
+    const state = makeContext([{ status: "ok", message: "Removed 'my-proxy' and its 2 models." }], [], ["delete", "my-proxy", undefined], [{ id: "my-proxy", models: 2 }])
     state.confirmValues.push(true)
     await runHub(state)
     expect(state.calls.filter(c => c.method === "remove")).toHaveLength(1)
+    expect(state.toasts.some(t => t.variant === "success" || /Removed 'my-proxy'/.test(t.message))).toBe(true)
+  })
+
+  it("shows a failure, not success, when remove reports from_config", async () => {
+    const message = "'my-proxy' comes from your opencode config, not from this plugin, so it was left alone."
+    const state = makeContext([{ status: "from_config", message }], [], ["delete", "my-proxy", undefined], [{ id: "my-proxy", models: 2 }])
+    state.confirmValues.push(true)
+    await runHub(state)
+    const toast = state.toasts.find(x => x.message === message)
+    expect(toast?.variant).toBe("error")
+    expect(state.toasts.some(x => x.variant === "success")).toBe(false)
   })
 
   it("returns to the menu after an action, so several can be done in one visit", async () => {
     const state = makeContext([{ providers: [] }, { providers: [] }], [], ["list", "list", undefined], [])
     await runHub(state)
     // Two list alerts can only happen if the menu came back between them.
-    expect(state.alerts.filter(a => a.title === "Your custom providers")).toHaveLength(2)
+    expect(state.alerts.filter(a => a.title === "List my providers")).toHaveLength(2)
   })
 
   it("stays quiet on exit when an action already ran", async () => {
@@ -340,7 +393,7 @@ describe("v2 add cancellation", () => {
   const prompts = ["my-proxy", "https://provider.example/v1", undefined]
 
   it("saves nothing when the user cancels at the API key step", async () => {
-    const state = makeContext([{ status: "ok", message: "should not be used" }], [...prompts], ["add", "openai-chat", "slug"])
+    const state = makeContext([{ status: "ok", message: "should not be used" }], [...prompts], ["add", "own", "openai-chat", "slug"])
     await runAdd(state)
     const writes = state.calls.filter(c => c.method !== "list")
     expect(writes.map(c => c.method)).not.toContain("add")
@@ -350,13 +403,13 @@ describe("v2 add cancellation", () => {
   })
 
   it("saves nothing when the user cancels at the name step", async () => {
-    const state = makeContext([{ status: "ok", message: "unused" }], [undefined], ["add", undefined])
+    const state = makeContext([{ status: "ok", message: "unused" }], [undefined], ["add", "own", undefined])
     await runAdd(state)
     expect(state.calls.filter(c => c.method !== "list")).toHaveLength(0)
   })
 
   it("saves nothing when the user cancels at the base URL step", async () => {
-    const state = makeContext([{ status: "ok", message: "unused" }], ["my-proxy", undefined], ["add", undefined])
+    const state = makeContext([{ status: "ok", message: "unused" }], ["my-proxy", undefined], ["add", "own", undefined])
     await runAdd(state)
     expect(state.calls.filter(c => c.method !== "list")).toHaveLength(0)
   })
@@ -368,7 +421,7 @@ describe("v2 add cancellation", () => {
   })
 
   it("saves nothing when the user cancels at the display style step", async () => {
-    const state = makeContext([{ status: "ok", message: "unused" }], ["my-proxy", "https://provider.example/v1", ""], ["add", "openai-chat", undefined, undefined])
+    const state = makeContext([{ status: "ok", message: "unused" }], ["my-proxy", "https://provider.example/v1", ""], ["add", "own", "openai-chat", undefined, undefined])
     await runAdd(state)
     expect(state.calls.filter(c => c.method !== "list")).toHaveLength(0)
   })
@@ -380,7 +433,7 @@ describe("v2 add without an API key", () => {
     const state = makeContext(
       [{ status: "ok", message: "Done. 'nokey' is ready with 2 models." }],
       ["nokey", "https://provider.example/v1", ""],
-      ["add", "openai-chat", "slug"],
+      ["add", "own", "openai-chat", "slug"],
     )
     await runAdd(state)
     const add = state.calls.find(c => c.method === "add")
@@ -391,7 +444,7 @@ describe("v2 add without an API key", () => {
     const state = makeContext(
       [{ status: "ok", message: "ok" }],
       ["withkey", "https://provider.example/v1", "sk-test-123"],
-      ["add", "openai-chat", "slug"],
+      ["add", "own", "openai-chat", "slug"],
     )
     await runAdd(state)
     expect(state.calls.find(c => c.method === "add")?.input).toMatchObject({ apiKey: "sk-test-123" })
@@ -563,6 +616,59 @@ describe("v2 model field editing", () => {
     expect(cancelToasts).toHaveLength(1)
   })
 
+  describe("endpoint values choice", () => {
+    // gpt-4o differs from the endpoint, so the picker must offer the two-way choice first.
+    const differing = () => ({
+      models: [{ ...modelRows[0], endpointDiffers: true }, { ...modelRows[1] }],
+      status: "ok",
+      message: "",
+    })
+
+    it("applies the endpoint's values and toasts the model id", async () => {
+      const state = makeContext(
+        [differing(), { status: "ok", message: "Updated gpt-4o from the endpoint." }, differing()],
+        [],
+        ["edit", "my-proxy", "model", "gpt-4o", "endpoint", ""],
+        [provider],
+      )
+
+      await runEditModels(state)
+
+      const use = state.calls.find(call => call.method === "useEndpointValues")
+      expect(use?.input).toEqual({ providerId: "my-proxy", modelId: "gpt-4o" })
+      expect(state.toasts.some(toast => toast.message === "Updated gpt-4o from the endpoint")).toBe(true)
+      expect(state.calls.some(call => call.method === "editModel")).toBe(false)
+    })
+
+    it("opens the settings editor and skips the endpoint RPC", async () => {
+      const state = makeContext(
+        [differing(), { message: "Saved 'gpt-4o': reasoning off." }, differing()],
+        ["", "0"],
+        ["edit", "my-proxy", "model", "gpt-4o", "settings", "off", "no", ""],
+        [provider],
+      )
+
+      await runEditModels(state)
+
+      expect(state.calls.some(call => call.method === "useEndpointValues")).toBe(false)
+      expect(state.calls.some(call => call.method === "editModel")).toBe(true)
+    })
+
+    it("cancels without writing when the choice is dismissed", async () => {
+      const state = makeContext(
+        [differing()],
+        [],
+        ["edit", "my-proxy", "model", "gpt-4o", undefined, undefined],
+        [provider],
+      )
+
+      await runEditModels(state)
+
+      expect(state.calls.some(call => call.method === "useEndpointValues")).toBe(false)
+      expect(state.calls.some(call => call.method === "editModel")).toBe(false)
+      expect(state.toasts.some(toast => /Cancelled/i.test(toast.message))).toBe(true)
+    })
+  })
 })
 
 describe("v2 catalog add cancellation", () => {
@@ -591,57 +697,6 @@ describe("v2 catalog add cancellation", () => {
   })
 })
 
-describe("v2 per-model review", () => {
-  // The review loop is the riskiest new code: it can delete a model. These pin the two
-  // invariants a unit test can reach with a fake dialog: Esc writes nothing, and a mixed
-  // run sends exactly the decisions the user made, in one apply call.
-  async function runReview(state: ReturnType<typeof makeContext>): Promise<void> {
-    setup(state.context)
-    const command = state.getLayer()?.commands?.find(item => item.slash?.name === "custom-providers")
-    if (!command) throw new Error("custom-providers command was not registered")
-    await command.run()
-  }
-
-  it("writes nothing when Esc is pressed during the per-model review", async () => {
-    const state = makeContext(
-      [
-        { message: "Found 2 models at the provider (2 changed).", changes: [
-          { id: "model-a", kind: "updated", detail: "context 128000 -> 1000000" },
-          { id: "model-b", kind: "added", detail: "model-b: new model" },
-        ] },
-      ],
-      [],
-      ["my-proxy", "review", undefined],
-      [{ id: "my-proxy", models: 2 }],
-    )
-    await runReview(state)
-    expect(state.calls.some(call => call.method === "apply")).toBe(false)
-    expect(state.toasts.some(toast => /Cancelled/i.test(toast.message))).toBe(true)
-  })
-
-  it("sends one apply call carrying only the decisions the user made", async () => {
-    const state = makeContext(
-      [
-        { message: "Found 2 models at the provider (2 changed).", changes: [
-          { id: "model-a", kind: "updated", detail: "context 128000 -> 1000000" },
-          { id: "model-b", kind: "added", detail: "model-b: new model" },
-        ] },
-        { message: "Done." },
-      ],
-      [],
-      ["review", "my-proxy", "review", "apply", "keep"],
-      [{ id: "my-proxy", models: 2 }],
-    )
-    await runReview(state)
-    const applies = state.calls.filter(call => call.method === "apply")
-    expect(applies).toHaveLength(1)
-    expect(JSON.parse(String((applies[0]?.input as { decisions?: string })?.decisions))).toEqual({
-      "model-a": "apply",
-      "model-b": "keep",
-    })
-  })
-})
-
 describe("v2 step-back: Esc goes back one step, not out of the wizard", () => {
   // Each wizard is a linear form now. These pin the contract: Esc at step N > 1 re-asks
   // step N-1 and writes nothing; only Esc at step 1 leaves and reports the cancellation.
@@ -651,7 +706,7 @@ describe("v2 step-back: Esc goes back one step, not out of the wizard", () => {
     const state = makeContext(
       [{ status: "ok", message: "ready" }],
       ["my-proxy", undefined, "my-proxy-2", "https://provider.example/v1", ""],
-      ["add", "openai-chat", "slug"],
+      ["add", "own", "openai-chat", "slug"],
     )
     await runAdd(state)
     // The name prompt was asked twice, so Esc went back rather than out.
@@ -665,7 +720,7 @@ describe("v2 step-back: Esc goes back one step, not out of the wizard", () => {
     const state = makeContext(
       [{ status: "ok", message: "ready" }],
       ["my-proxy", "https://a.example/v1", "https://b.example/v1", ""],
-      ["add", undefined, "openai-chat", "slug"],
+      ["add", "own", undefined, "openai-chat", "slug"],
     )
     await runAdd(state)
     const writes = state.calls.filter(c => c.method !== "list")
@@ -685,7 +740,7 @@ describe("v2 step-back: Esc goes back one step, not out of the wizard", () => {
     const state = makeContext(
       [{ status: "ok", message: "ready" }],
       [...addStep1],
-      ["add", "openai-chat", "slug"],
+      ["add", "own", "openai-chat", "slug"],
     )
     await runAdd(state)
     expect(state.calls.filter(c => c.method !== "list").map(c => c.method)).toEqual(["add"])

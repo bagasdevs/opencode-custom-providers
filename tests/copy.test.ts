@@ -10,7 +10,7 @@ const RETIRED_PHRASES = [/on this computer/i, /Something running/i, /or localhos
 
 function joinedDescriptionValues(text: string): string[] {
   const out: string[] = []
-  for (const match of text.matchAll(/description:\s*([\s\S]*?)(?=,\s*\n\s*\w+:|\n\s*\}\)|$)/g)) {
+  for (const match of text.matchAll(/description:\s*([\s\S]*?)(?=,\s*\n\s*\w+:|\n\s*\}|$)/g)) {
     const literals = [...match[1].matchAll(/"((?:[^"\\]|\\.)*)"/g)].map(m => m[1])
     if (literals.length > 0) out.push(literals.join(""))
   }

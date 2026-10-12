@@ -123,7 +123,7 @@ export const tui: TuiPlugin = async (api: TuiPluginApi) => {
           })
         } else if (result.totalModels > 0) {
           api.ui.toast({
-            message: `Reloaded ${result.totalModels} model(s) with ${result.failures} failure(s). Check provider URLs/keys.`,
+            message: `Reloaded ${result.totalModels} model(s). ${result.failures} provider(s) failed.`,
             variant: "warning",
           })
         }
@@ -137,9 +137,9 @@ export const tui: TuiPlugin = async (api: TuiPluginApi) => {
         name: "add-provider",
       },
       onSelect: async () => {
-        const source = await showSelect(api, "Add provider", [
-          { title: "Custom endpoint", value: "endpoint", description: "Probe /models and metadata sources" },
-          { title: "models.dev catalog", value: "catalog", description: "Known site, metadata from catalog, no probing" },
+        const source = await showSelect(api, "Add a provider > Where is it from?", [
+          { title: "My own API", value: "endpoint", description: "You type its address and key." },
+          { title: "Built-in list", value: "catalog", description: "Pick from a ready-made list." },
         ])
         if (!source) return
 
@@ -157,7 +157,7 @@ export const tui: TuiPlugin = async (api: TuiPluginApi) => {
             api.ui.toast({ message: "Catalog is empty.", variant: "warning" })
             return
           }
-          const siteId = await showSelect(api, "Catalog site", sites.map(s => ({
+          const siteId = await showSelect(api, "Add from built-in list > Pick one", sites.map(s => ({
             title: s.name,
             value: s.id,
             description: `${s.modelCount} model(s)`,
@@ -166,7 +166,7 @@ export const tui: TuiPlugin = async (api: TuiPluginApi) => {
           const site = sites.find(s => s.id === siteId)
           if (!site) return
 
-          const rawProviderId = await showPrompt(api, "Provider ID", siteId)
+          const rawProviderId = await showPrompt(api, "Add from built-in list > Name", siteId)
           if (!rawProviderId) return
           const providerId = rawProviderId.trim()
           const idError = validateProviderId(providerId)
@@ -176,37 +176,45 @@ export const tui: TuiPlugin = async (api: TuiPluginApi) => {
           }
           const suggestion = collisionSuggestion(providerId)
           if (suggestion && suggestion !== providerId) {
-            api.ui.toast({ message: `'${providerId}' merges with a built-in id; '${suggestion}' stays separate.`, variant: "warning" })
+            api.ui.toast({ message: `'${providerId}' is a name OpenCode already uses. Pick a different one, or use '${suggestion}'.`, variant: "warning" })
           }
 
           const catProviders = await bridge.getProviders()
           if (catProviders[providerId]) {
-            const overwrite = await showConfirm(api, "Provider already exists", `Overwrite '${providerId}'?`)
+            const overwrite = await showConfirm(api, "Add from built-in list > Name taken", `'${providerId}' already exists. Replace it?`)
             if (!overwrite) return
           }
 
-          const rawApiKey = await showPrompt(api, "API Key (Optional)", "sk-...")
+          const rawApiKey = await showPrompt(api, "Add from built-in list > API key (optional)", "sk-...")
           const apiKey = rawApiKey?.trim() || undefined
 
-          const displayStyle = await showSelect<DisplayStyle>(api, "Model Display Names", [
-            { title: "Full Slug", value: "slug", description: "vertex/gemini-3.1-pro (best for proxies)" },
-            { title: "Friendly Name", value: "name", description: "Gemini 3.1 Pro (may be ambiguous)" },
+          const displayStyle = await showSelect<DisplayStyle>(api, "Add from built-in list > Model names", [
+            {
+              title: "Model id",
+              value: "slug",
+              description: "Short id, like gpt-4o. Works everywhere.",
+            },
+            {
+              title: "Friendly name",
+              value: "name",
+              description: "The provider's own label, when it has one.",
+            },
           ])
           if (!displayStyle) return
 
-          const scope = await showSelect(api, `${site.modelCount} model(s) available`, [
-            { title: "Add all", value: "all", description: `${site.modelCount} model(s)` },
-            { title: "Pick ids", value: "pick", description: "Comma-separated" },
+          const scope = await showSelect(api, `Add from built-in list > Which models? (${site.modelCount} available)`, [
+            { title: "Add all", value: "all", description: `Adds all ${site.modelCount} model(s)` },
+            { title: "Type the names", value: "pick", description: "Choose which ones to add" },
             { title: "Cancel", value: "cancel", description: "Add nothing" },
           ])
           if (!scope || scope === "cancel") return
           let modelIds: string[] | undefined
           if (scope === "pick") {
-            const rawIds = await showPrompt(api, "Model ids (comma-separated)")
+            const rawIds = await showPrompt(api, "Add from built-in list > Model ids", "model-a, model-b")
             if (!rawIds) return
             modelIds = parseModelIds(rawIds)
             if (!modelIds || modelIds.length === 0) {
-              api.ui.toast({ message: "No model ids provided. Enter at least one id (comma-separated).", variant: "error" })
+              api.ui.toast({ message: "Type at least one model id, separated by commas.", variant: "error" })
               return
             }
           }
@@ -243,13 +251,13 @@ export const tui: TuiPlugin = async (api: TuiPluginApi) => {
           await bridge.updateProviders(catProviders)
           const stored = Object.keys(built.models).length
           api.ui.toast({
-            message: `Added ${stored} model(s)${built.missing.length > 0 ? `, unknown: ${built.missing.join(", ")}` : ""}.`,
+            message: `Added ${stored} model(s).${built.missing.length > 0 ? ` Not found: ${built.missing.join(", ")}.` : ""}`,
             variant: "success",
           })
           return
         }
 
-        const rawProviderId = await showPrompt(api, "Provider ID", "e.g., my-proxy (alphanumeric only)")
+        const rawProviderId = await showPrompt(api, "Add a provider > Step 1 of 5: Name", "e.g. my-proxy (letters, numbers, - and _)")
         if (!rawProviderId) return
 
         const providerId = rawProviderId.trim()
@@ -265,30 +273,30 @@ export const tui: TuiPlugin = async (api: TuiPluginApi) => {
         if (providers[providerId]) {
           overwrite = await showConfirm(
             api,
-            "Provider already exists",
-            `A provider with ID '${providerId}' already exists. Overwrite it?`,
+            "Add a provider > Name taken",
+            `You already have a provider named '${providerId}'. Replace it? Its models will be replaced too.`,
           )
           if (!overwrite) return
         }
 
-        const rawBaseURL = await showPrompt(api, "Base URL", "https://api.example.com/v1")
+        const rawBaseURL = await showPrompt(api, "Add a provider > Step 2 of 5: Base URL", "https://api.example.com/v1")
         if (!rawBaseURL) return
 
         const baseURL = rawBaseURL.trim()
 
-        const rawApiKey = await showPrompt(api, "API Key (Optional)", "sk-...")
+        const rawApiKey = await showPrompt(api, "Add a provider > Step 4 of 5: API key (optional)", "sk-...")
         const apiKey = rawApiKey?.trim() || undefined
 
-        const displayStyle = await showSelect<DisplayStyle>(api, "Model Display Names", [
+        const displayStyle = await showSelect<DisplayStyle>(api, "Add a provider > Step 5 of 5: Model names", [
           {
-            title: "Full Slug",
+            title: "Model id",
             value: "slug",
-            description: "vertex/gemini-3.1-pro (best for proxies)",
+            description: "Short id, like gpt-4o. Works everywhere.",
           },
           {
-            title: "Friendly Name",
+            title: "Friendly name",
             value: "name",
-            description: "Gemini 3.1 Pro (may be ambiguous)",
+            description: "The provider's own label, when it has one.",
           },
         ])
         if (!displayStyle) return
@@ -300,7 +308,7 @@ export const tui: TuiPlugin = async (api: TuiPluginApi) => {
           return
         }
 
-        api.ui.toast({ message: `Discovering models from ${baseURL}...`, variant: "info" })
+        api.ui.toast({ message: `Finding models at ${baseURL}...`, variant: "info" })
 
         const result = await addProvider(params)
 
@@ -329,26 +337,16 @@ export const tui: TuiPlugin = async (api: TuiPluginApi) => {
         await bridge.updateProviders(providers)
 
         // Say what was learned and what to do next, not just "done".
-        const entry = result.providerEntry
-        const stored = Object.keys(entry.models ?? {}).length
-        const learned: string[] = []
-        for (const model of Object.values(entry.models ?? {})) {
-          const limits = (model as { limit?: { context?: number; output?: number } }).limit
-          if (limits?.context) learned.push("context")
-          if (limits?.output) learned.push("max output")
-          break
-        }
-        const detail = learned.length ? ` Learned: ${[...new Set(learned)].join(", ")}.` : " No extra details were measured for it."
         api.ui.toast({
-          message: `${result.message}${detail} Run /model to pick one of its ${stored} model${stored === 1 ? "" : "s"}.`,
+          message: `${result.message} Pick one with /model.`,
           variant: "success",
         })
       },
     },
     {
-      title: "Re-probe Models",
+      title: "Review model changes",
       value: "reprobe-models",
-      description: "Re-probe a provider and reconcile model changes",
+      description: "Check a provider for new or removed models",
       slash: {
         name: "reprobe-models",
       },
@@ -359,7 +357,7 @@ export const tui: TuiPlugin = async (api: TuiPluginApi) => {
           api.ui.toast({ message: "No providers configured.", variant: "warning" })
           return
         }
-        const providerId = await showSelect(api, "Provider to re-probe", ids.map(id => ({ title: id, value: id })))
+        const providerId = await showSelect(api, "Review model changes > Pick a provider", ids.map(id => ({ title: id, value: id })))
         if (!providerId) return
         const provider = providers[providerId]
 
@@ -369,21 +367,21 @@ export const tui: TuiPlugin = async (api: TuiPluginApi) => {
           rep = await reprobeProvider(providerId, provider)
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error)
-          api.ui.toast({ message: `Re-probe failed: ${message}`, variant: "error" })
+          api.ui.toast({ message: `Could not check ${providerId}: ${message}`, variant: "error" })
           return
         }
         if (rep.changes.length === 0) {
           api.ui.toast({ message: `Already in sync (${rep.fresh.length} model(s)).`, variant: "success" })
           return
         }
-        const mode = await showSelect(api, `${rep.changes.length} change(s) found`, [
-          { title: "Review each", value: "each", description: "Decide per model" },
-          { title: "Keep what I have (safest)", value: "keep", description: "Leave every model as it is" },
+        const mode = await showSelect(api, `Review model changes > ${rep.changes.length} change(s) found`, [
+          { title: "Review one by one", value: "each", description: "Decide each change yourself." },
+          { title: "Keep everything (safest)", value: "keep", description: "Change nothing." },
           { title: "Cancel", value: "cancel", description: "Change nothing" },
         ])
         if (!mode || mode === "cancel") return
         if (mode === "keep") {
-          api.ui.toast({ message: "Kept what you have. Nothing was changed.", variant: "info" })
+          api.ui.toast({ message: "Kept everything. Nothing was changed.", variant: "info" })
           return
         }
 
@@ -393,10 +391,10 @@ export const tui: TuiPlugin = async (api: TuiPluginApi) => {
           for (const change of rep.changes) {
             const fresh = freshById.get(change.id)
             const source = fresh ? `\n${describeProbed(fresh)}` : ""
-            const choice = await showSelect<TriDecision>(api, `[${change.kind}] ${change.id}`, [
-              { title: "Keep stored", value: "keep", description: "Leave the current entry unchanged" },
-              { title: "Apply update", value: "apply", description: `${change.detail}${source}` },
-              { title: "Remove", value: "remove", description: "Delete the stored entry" },
+            const choice = await showSelect<TriDecision>(api, `Review model changes > ${change.id} (${change.kind})`, [
+              { title: "Keep it", value: "keep", description: "Leave this model as it is." },
+              { title: "Apply this change", value: "apply", description: `${change.detail}${source}` },
+              { title: "Delete it", value: "remove", description: "Remove this model from the list." },
             ])
             if (!choice) return
             decisions[change.id] = choice
@@ -405,13 +403,13 @@ export const tui: TuiPlugin = async (api: TuiPluginApi) => {
         const next = applyReconcile(provider, rep.fresh, decisions)
         provider.models = next
         await bridge.updateProviders(providers)
-        api.ui.toast({ message: `Reconciled: ${Object.keys(next).length} model(s) stored.`, variant: "success" })
+        api.ui.toast({ message: `Updated: ${Object.keys(next).length} model(s) stored.`, variant: "success" })
       },
     },
     {
-      title: "Edit Provider",
+      title: "Edit a provider",
       value: "edit-provider",
-      description: "Rename, re-point, or tweak a provider and its models",
+      description: "Change the address, key, or models",
       slash: {
         name: "edit-provider",
       },
@@ -422,7 +420,7 @@ export const tui: TuiPlugin = async (api: TuiPluginApi) => {
           api.ui.toast({ message: "No providers configured.", variant: "warning" })
           return
         }
-        const providerId = await showSelect(api, "Provider to edit", ids.map(id => ({ title: id, value: id })))
+        const providerId = await showSelect(api, "Edit a provider > Pick a provider", ids.map(id => ({ title: id, value: id })))
         if (!providerId) return
         const provider = providers[providerId]
         if (provider.options?.apiKey) {
@@ -438,18 +436,25 @@ export const tui: TuiPlugin = async (api: TuiPluginApi) => {
               api.ui.toast({ message: migration.note, variant: "warning" })
             }
           } catch (error) {
-            const message = error instanceof Error ? error.message : String(error)
+            const message =
+              error instanceof Error
+                ? error.message
+                : error && typeof error === "object" && typeof (error as { message?: unknown }).message === "string"
+                  ? (error as { message: string }).message
+                  : typeof error === "string"
+                    ? error
+                    : "unknown error"
             api.ui.toast({ message: `Key migration failed: ${message}`, variant: "error" })
           }
         }
-        const action = await showSelect(api, `Edit ${providerId}`, [
+        const action = await showSelect(api, `Edit ${providerId} > What to change`, [
           { title: "Rename", value: "rename" },
-          { title: "Endpoint", value: "endpoint" },
-          { title: "Flavor", value: "flavor" },
+          { title: "Base URL", value: "endpoint" },
+          { title: "API type", value: "flavor" },
           { title: "API key", value: "key" },
-          { title: "Display style", value: "style" },
-          { title: "Edit model", value: "model" },
-          { title: "Add models manually", value: "add" },
+          { title: "Model names", value: "style" },
+          { title: "Model settings", value: "model" },
+          { title: "Type model ids to add", value: "add" },
           { title: "Delete models", value: "delete" },
         ])
         if (!action) return
@@ -458,17 +463,18 @@ export const tui: TuiPlugin = async (api: TuiPluginApi) => {
         }
 
         if (action === "rename") {
-          const raw = await showPrompt(api, "New provider ID", providerId)
+          const raw = await showPrompt(api, `Edit ${providerId} > Rename`, providerId)
           if (!raw) return
           let finalId = raw.trim()
           const suggestion = collisionSuggestion(finalId)
           if (suggestion && suggestion !== finalId) {
             const useSuggested = await showConfirm(
               api,
-              "Built-in id collision",
-              `'${finalId}' merges with a built-in provider. Use '${suggestion}' instead?`,
+              `Edit ${providerId} > Name taken`,
+              `'${finalId}' is a name OpenCode already uses. Use '${suggestion}' instead?`,
             )
-            if (useSuggested) finalId = suggestion
+            if (!useSuggested) return
+            finalId = suggestion
           }
           const { error, warning } = renameProviderEntry(providers, providerId, finalId)
           if (error) {
@@ -478,25 +484,25 @@ export const tui: TuiPlugin = async (api: TuiPluginApi) => {
           await save()
           api.ui.toast({ message: `Renamed to '${finalId}'.`, variant: "success" })
           if (warning) api.ui.toast({ message: warning, variant: "warning" })
-          api.ui.toast({ message: "Stored credential (if any) is still keyed by the old id: re-enter it via Edit Provider → API key.", variant: "warning" })
+          api.ui.toast({ message: "Renamed. Enter the API key again: Edit a provider > API key.", variant: "warning" })
           return
         }
         if (action === "endpoint") {
-          const raw = await showPrompt(api, "Base URL", provider.options?.baseURL)
+          const raw = await showPrompt(api, `Edit ${providerId} > Base URL`, provider.options?.baseURL)
           if (!raw) return
           const baseURL = normalizeBaseUrl(raw).replace(/\/+$/, "")
           if (!isValidUrl(baseURL)) {
-            api.ui.toast({ message: "Invalid Base URL.", variant: "error" })
+            api.ui.toast({ message: "That address is not valid. Nothing was changed.", variant: "error" })
             return
           }
           provider.options = { ...provider.options, baseURL }
           provider.api = baseURL
           await save()
-          api.ui.toast({ message: "Endpoint updated. Run Re-probe Models to refresh.", variant: "success" })
+          api.ui.toast({ message: "Base URL saved. Choose 'Review model changes' to refresh.", variant: "success" })
           return
         }
         if (action === "flavor") {
-          const flavor = await showSelect(api, "Endpoint flavor", Object.values(FLAVORS).map(f => ({
+          const flavor = await showSelect(api, `Edit ${providerId} > API type`, Object.values(FLAVORS).map(f => ({
             title: f.label,
             value: f.flavor,
             description: f.description,
@@ -504,11 +510,11 @@ export const tui: TuiPlugin = async (api: TuiPluginApi) => {
           if (!flavor) return
           provider.flavor = flavor
           await save()
-          api.ui.toast({ message: `Flavor set to ${flavor}. Run Re-probe Models to refresh.`, variant: "success" })
+          api.ui.toast({ message: "API type saved. Choose 'Review model changes' to refresh.", variant: "success" })
           return
         }
         if (action === "key") {
-          const raw = await showPrompt(api, "API Key (blank to clear)", "sk-...")
+          const raw = await showPrompt(api, `Edit ${providerId} > New API key (empty clears it)`, "sk-...")
           if (raw === null) return
           const key = raw.trim() || undefined
           try {
@@ -529,18 +535,26 @@ export const tui: TuiPlugin = async (api: TuiPluginApi) => {
           }
           if (!key && provider.options) delete provider.options.apiKey
           await save()
-          api.ui.toast({ message: key ? "API key updated." : "API key cleared.", variant: "success" })
+          api.ui.toast({ message: key ? "API key saved." : "API key cleared.", variant: "success" })
           return
         }
         if (action === "style") {
-          const style = await showSelect<DisplayStyle>(api, "Model display names", [
-            { title: "Full Slug", value: "slug" },
-            { title: "Friendly Name", value: "name" },
+          const style = await showSelect<DisplayStyle>(api, `Edit ${providerId} > Model names`, [
+            {
+              title: "Model id",
+              value: "slug",
+              description: "Short id, like gpt-4o. Works everywhere.",
+            },
+            {
+              title: "Friendly name",
+              value: "name",
+              description: "The provider's own label, when it has one.",
+            },
           ])
           if (!style) return
           provider.displayStyle = style
           await save()
-          api.ui.toast({ message: `Display style set to ${style}.`, variant: "success" })
+          api.ui.toast({ message: "Model names saved.", variant: "success" })
           return
         }
 
@@ -548,17 +562,17 @@ export const tui: TuiPlugin = async (api: TuiPluginApi) => {
         if (action === "model") {
           const modelIds = Object.keys(models)
           if (modelIds.length === 0) {
-            api.ui.toast({ message: "No models stored.", variant: "warning" })
+            api.ui.toast({ message: "This provider has no models yet. Run 'Reload Models' first.", variant: "warning" })
             return
           }
-          const modelId = await showSelect(api, "Model to edit", modelIds.map(id => ({ title: id, value: id })))
+          const modelId = await showSelect(api, `Edit ${providerId} > Model settings: which model?`, modelIds.map(id => ({ title: id, value: id })))
           if (!modelId) return
-          const field = await showSelect<ModelField>(api, `Field of ${modelId}`, [
-            { title: "Display name", value: "name" },
+          const field = await showSelect<ModelField>(api, `Edit ${providerId} > ${modelId}: what to change`, [
+            { title: "Name", value: "name" },
             { title: "Context window", value: "context" },
-            { title: "Max output", value: "output" },
-            { title: "Reasoning", value: "reasoning" },
-            { title: "Image input", value: "image" },
+            { title: "Longest reply", value: "output" },
+            { title: "Thinking", value: "reasoning" },
+            { title: "Reads images", value: "image" },
           ])
           if (!field) return
           const m = models[modelId]
@@ -573,7 +587,7 @@ export const tui: TuiPlugin = async (api: TuiPluginApi) => {
                 : field === "reasoning"
                   ? String(!!m.reasoning)
                   : String(m.modalities?.input.includes("image") ?? false)
-          const raw = await showPrompt(api, `${field} (current: ${current})`)
+          const raw = await showPrompt(api, `Edit ${providerId} > ${modelId}: ${field} (now: ${current})`)
           if (raw === null) return
           const error = editModelField(models, modelId, field, raw)
           if (error) {
@@ -582,21 +596,21 @@ export const tui: TuiPlugin = async (api: TuiPluginApi) => {
           }
           provider.models = models
           await save()
-          api.ui.toast({ message: `Model '${modelId}' updated.`, variant: "success" })
+          api.ui.toast({ message: `Saved '${modelId}'.`, variant: "success" })
           return
         }
         if (action === "add") {
-          const raw = await showPrompt(api, "Model ids (comma-separated)")
+          const raw = await showPrompt(api, `Edit ${providerId} > Add models: type the ids`, "model-a, model-b")
           if (!raw) return
           const ids = raw.split(",").map(s => s.trim()).filter(s => s.length > 0)
           if (ids.length === 0) return
-          api.ui.toast({ message: "Resolving metadata...", variant: "info" })
+          api.ui.toast({ message: "Looking up details...", variant: "info" })
           const previews = await previewManualModels(ids, provider.flavor, provider.displayStyle)
           const lines = previews.map(({ probed }) => describeProbed(probed))
           const ok = await showConfirm(
             api,
-            "Add models",
-            `${previews.length} model(s):\n${lines.slice(0, 10).join("\n")}${lines.length > 10 ? `\n…+${lines.length - 10} more` : ""}`,
+            `Edit ${providerId} > Add models?`,
+            `${previews.length} model(s) to add:\n${lines.slice(0, 10).join("\n")}${lines.length > 10 ? `\n…+${lines.length - 10} more` : ""}`,
           )
           if (!ok) return
           const stored = getStoredModels(provider)
@@ -613,7 +627,7 @@ export const tui: TuiPlugin = async (api: TuiPluginApi) => {
           provider.models = stored
           await save()
           api.ui.toast({
-            message: `Added ${added}${skipped.length > 0 ? `, skipped ${skipped.length}` : ""}.`,
+            message: `Added ${added}.${skipped.length > 0 ? ` Skipped ${skipped.length} already in the list.` : ""}`,
             variant: "success",
           })
           return
@@ -621,21 +635,21 @@ export const tui: TuiPlugin = async (api: TuiPluginApi) => {
         if (action === "delete") {
           const modelIds = Object.keys(models)
           if (modelIds.length === 0) {
-            api.ui.toast({ message: "No models stored.", variant: "warning" })
+            api.ui.toast({ message: "This provider has no models to delete.", variant: "warning" })
             return
           }
-          const raw = await showPrompt(api, "Model ids to delete (comma-separated)")
+          const raw = await showPrompt(api, `Edit ${providerId} > Delete models: type the ids`, "model-a, model-b")
           if (!raw) return
           const candidates = raw.split(",").map(s => s.trim()).filter(s => s.length > 0)
           const unknown = candidates.filter(id => !models[id])
           if (unknown.length > 0) {
-            api.ui.toast({ message: `Unknown model(s): ${unknown.join(", ")}.`, variant: "error" })
+            api.ui.toast({ message: `Not found in this provider: ${unknown.join(", ")}. Nothing was deleted.`, variant: "error" })
             return
           }
           const ok = await showConfirm(
             api,
-            "Delete models",
-            `Remove ${candidates.length} model(s) from ${providerId}?\n${candidates.join(", ")}`,
+            `Edit ${providerId} > Delete models?`,
+            `Delete ${candidates.length} model(s) from ${providerId}?\n${candidates.join(", ")}\nThis cannot be undone.`,
           )
           if (!ok) return
           const { deleted } = deleteModels(models, candidates)
@@ -646,7 +660,7 @@ export const tui: TuiPlugin = async (api: TuiPluginApi) => {
       },
     },
     {
-      title: "Delete Provider",
+      title: "Delete a provider",
       value: "delete-provider",
       description: "Remove a provider and its models",
       slash: {
@@ -659,9 +673,9 @@ export const tui: TuiPlugin = async (api: TuiPluginApi) => {
           api.ui.toast({ message: "No providers configured.", variant: "warning" })
           return
         }
-        const providerId = await showSelect(api, "Provider to delete", ids.map(id => ({ title: id, value: id })))
+        const providerId = await showSelect(api, "Delete a provider > Pick a provider", ids.map(id => ({ title: id, value: id })))
         if (!providerId) return
-        const ok = await showConfirm(api, "Delete provider", `Remove '${providerId}' and all its models?`)
+        const ok = await showConfirm(api, `Delete a provider > Delete ${providerId}?`, `'${providerId}' and all its models are removed. This cannot be undone.`)
         if (!ok) return
         const error = deleteProviderEntry(providers, providerId)
         if (error) {

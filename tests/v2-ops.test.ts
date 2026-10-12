@@ -455,6 +455,38 @@ describe("v2 ops: rename-provider", () => {
     const list = await host.handlers.list({}) as { providers: Array<{ id: string }> }
     expect(list.providers.map(provider => provider.id)).toContain("p-charlie")
   })
+
+  it("keeps a config provider enabled when its id was removed earlier, and still tombstones host-only rows", async () => {
+    const host = createHost()
+    // "dup" is a config provider the user re-declared after removing it: it must stay enabled.
+    host.providers.set("dup", {
+      provider: {
+        id: "dup",
+        name: "dup",
+        package: OPENAI_COMPATIBLE,
+        activation: "enabled",
+        settings: { baseURL: "https://dup.example/v1", dynamic: true },
+      },
+      models: new Map(),
+    })
+    // "gone" is a plugin-removed row (dynamic: false tombstone): it must still be disabled.
+    host.providers.set("gone", {
+      provider: {
+        id: "gone",
+        name: "gone",
+        package: OPENAI_COMPATIBLE,
+        activation: "enabled",
+        settings: { baseURL: "https://gone.example/v1", dynamic: false },
+      },
+      models: new Map(),
+    })
+    host.storage.set("removed", ["dup", "gone"])
+    vi.stubGlobal("fetch", async () => new Response("{}", { status: 200 }))
+    await setup(host.ctx)
+
+    expect(host.providers.get("dup")?.provider.activation).toBe("enabled")
+    expect(host.providers.get("gone")?.provider.activation).toBe("disabled")
+  })
 })
 
 describe("v2 rpc wiring", () => {
@@ -629,11 +661,19 @@ const PROVIDER_ROWS = () => [
 const responses = (overrides: Record<string, unknown> = {}) => ({
   list: { providers: PROVIDER_ROWS() },
   edit: { message: "Base URL updated." },
-  deleteModels: { status: "ok", message: "Removed 2 model(s) from 'bulk-proxy': model-a, model-b.", deleted: 2 },
+  deleteModels: { status: "ok", message: "Removed 1 model(s) from 'bulk-proxy'.", deleted: 1 },
+  listModels: {
+    status: "ok",
+    message: "",
+    models: [
+      { id: "model-a", name: "Model A", reasoning: "off", reasoningLabel: "Off", image: false },
+      { id: "model-b", name: "Model B", reasoning: "off", reasoningLabel: "Off", image: false },
+    ],
+  },
   renameProvider: { status: "ok", message: "Done. 'bulk-proxy' is now called 'bulk-proxy-2'." },
   ...overrides,
 })
-const MENU = "What do you want to change for bulk-proxy?"
+const MENU = "Edit bulk-proxy > What to change"
 
 describe("edit-provider wizard layering", () => {
   // Esc at the menu is the exit; Esc in a nested dialog returns to the menu, so the
@@ -713,10 +753,11 @@ describe("edit-provider wizard layering", () => {
     expect(cancelledToasts(state)).toHaveLength(1)
   })
 
-  it("deletes the models the user confirmed", async () => {
+  it("deletes the model the user picked and confirmed", async () => {
     const state = makeTui({
-      selects: ["edit", "bulk-proxy", "deleteModels", undefined],
-      prompts: ["model-a, model-b"],
+      // Pick model-a from the list, then "Done" to leave.
+      selects: ["edit", "bulk-proxy", "deleteModels", "model-a", "", undefined],
+      prompts: [],
       confirms: [true],
       responses: responses(),
     })
@@ -725,15 +766,14 @@ describe("edit-provider wizard layering", () => {
 
     const calls = state.rpcCalls.filter(call => call.method === "deleteModels")
     expect(calls).toHaveLength(1)
-    expect(calls[0]?.input).toEqual({ providerId: "bulk-proxy", modelIds: "model-a, model-b" })
+    expect(calls[0]?.input).toEqual({ providerId: "bulk-proxy", modelIds: "model-a" })
     expect(state.toasts.some(toast => toast.variant === "success")).toBe(true)
-    expect(state.events.filter(event => event === `select:${MENU}`)).toHaveLength(2)
   })
 
   it("writes nothing when the delete confirm is declined", async () => {
     const state = makeTui({
-      selects: ["edit", "bulk-proxy", "deleteModels", undefined],
-      prompts: ["model-a"],
+      selects: ["edit", "bulk-proxy", "deleteModels", "model-a", "", undefined],
+      prompts: [],
       confirms: [false],
       responses: responses(),
     })
@@ -741,7 +781,6 @@ describe("edit-provider wizard layering", () => {
     await runEditProvider(state)
 
     expect(state.rpcCalls.filter(call => call.method === "deleteModels")).toEqual([])
-    expect(cancelledToasts(state)).toHaveLength(1)
   })
 
   it("renames the provider the user confirmed", async () => {

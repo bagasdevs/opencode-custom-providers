@@ -43,6 +43,11 @@ export function sanitizeErrorMessage(error: unknown): string {
   )
 
   const redacted = message
+    // Runs before Bearer: the Bearer pattern would swallow the closing quote.
+    .replaceAll(
+      /("(?:api[_-]?key|token|password|authorization)"\s*:\s*)"[^"]*"/gi,
+      '$1"[REDACTED]"',
+    )
     .replaceAll(/Bearer\s+[^\s]+/gi, "Bearer [REDACTED]")
     .replaceAll(/api[_-]?key[=:]\s*[^\s&]+/gi, "api_key=[REDACTED]")
     .replaceAll(/sk-[a-zA-Z0-9_-]+/g, "sk-[REDACTED]")

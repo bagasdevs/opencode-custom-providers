@@ -138,7 +138,10 @@ export function mergeDiscoveredIntoStored(target: Record<string, unknown>, fresh
       typeof current === "object" &&
       !Array.isArray(current)
     ) {
-      mergeDiscoveredIntoStored(current as Record<string, unknown>, value as Record<string, unknown>)
+      // The host freezes the nested objects it hands us, so copy instead of writing into them.
+      const copy = { ...(current as Record<string, unknown>) }
+      mergeDiscoveredIntoStored(copy, value as Record<string, unknown>)
+      target[key] = copy
       continue
     }
     target[key] = value

@@ -454,6 +454,217 @@ describe("v2 reprobe", () => {
   })
 })
 
+describe("v2 use the endpoint's values for one model", () => {
+  // A hand-edited model is protected from refresh, so the user needs a deliberate way to take
+  // the endpoint's current limit. This pins that the action writes only the measured limits.
+  it("overwrites a hand-edited context limit and keeps limit.input", async () => {
+    vi.stubGlobal("fetch", async (input: unknown) => {
+      if (String(input).includes("models.dev")) return new Response("{}", { status: 200 })
+      return new Response(JSON.stringify({ data: [{ id: "model-a", context_window: 200000 }] }), { status: 200 })
+    })
+    const state = await registeredHandlers()
+    await state.handlers["add"]?.({ providerId: "my-proxy", baseURL: "https://provider.example/v1", apiKey: "test-key" })
+    // Hand-edit: sets draft.edited = true and a stored context, and carries an extra limit.input.
+    const record = state.records.get("my-proxy")
+    const draft = record?.models.get("model-a") as { limit?: Record<string, number>; edited?: boolean } | undefined
+    expect(draft).toBeDefined()
+    if (draft) {
+      draft.edited = true
+      draft.limit = { context: 50000, input: 900000 }
+    }
+    // The endpoint now reports 1000000 for the same model.
+    vi.stubGlobal("fetch", async (input: unknown) => {
+      if (String(input).includes("models.dev")) return new Response("{}", { status: 200 })
+      return new Response(JSON.stringify({ data: [{ id: "model-a", context_window: 1000000 }] }), { status: 200 })
+    })
+    await state.handlers["reprobe"]?.({ providerId: "my-proxy" })
+    const listed = (await state.handlers["listModels"]?.({ providerId: "my-proxy" })) as {
+      models: Array<{ id: string; endpointDiffers?: boolean }>
+    }
+    expect(listed.models.find(model => model.id === "model-a")?.endpointDiffers).toBe(true)
+
+    const result = (await state.handlers["useEndpointValues"]?.({ providerId: "my-proxy", modelId: "model-a" })) as {
+      status: string
+      message: string
+    }
+    expect(result.status).toBe("ok")
+    expect(result.message).toBe("Updated model-a from the endpoint.")
+    const after = state.records.get("my-proxy")?.models.get("model-a") as { limit?: { context?: number; input?: number } }
+    expect(after.limit?.context).toBe(1000000)
+    expect(after.limit?.input).toBe(900000)
+  })
+
+  it("reports an unknown model without writing", async () => {
+    vi.stubGlobal("fetch", async (input: unknown) => {
+      if (String(input).includes("models.dev")) return new Response("{}", { status: 200 })
+      return new Response(JSON.stringify({ data: [{ id: "model-a" }] }), { status: 200 })
+    })
+    const state = await registeredHandlers()
+    await state.handlers["add"]?.({ providerId: "my-proxy", baseURL: "https://provider.example/v1", apiKey: "test-key" })
+    const result = (await state.handlers["useEndpointValues"]?.({ providerId: "my-proxy", modelId: "missing" })) as { status: string }
+    expect(result.status).toBe("unknown_model")
+  })
+})
+
+describe("v2 addModelIds", () => {
+  it("appends new ids and skips ids already stored", async () => {
+    vi.stubGlobal("fetch", async (input: unknown) => {
+      if (String(input).includes("models.dev")) return new Response("{}", { status: 200 })
+      return new Response(JSON.stringify({ data: [{ id: "model-a" }] }), { status: 200 })
+    })
+    const state = await registeredHandlers()
+    await state.handlers["add"]?.({ providerId: "my-proxy", baseURL: "https://provider.example/v1", apiKey: "test-key" })
+    const result = (await state.handlers["addModelIds"]?.({ providerId: "my-proxy", modelIds: "model-a, model-x" })) as {
+      status: string
+      added: number
+      skipped: number
+    }
+    expect(result).toMatchObject({ status: "ok", added: 1, skipped: 1 })
+    const models = state.records.get("my-proxy")?.models
+    expect(models?.has("model-x")).toBe(true)
+  })
+
+  it("reports an unknown provider without writing", async () => {
+    const state = await registeredHandlers()
+    const result = (await state.handlers["addModelIds"]?.({ providerId: "nope", modelIds: "x" })) as { status: string }
+    expect(result.status).toBe("unknown_provider")
+  })
+})
+
+describe("v2 remove status", () => {
+  // The TUI shows success only on status "ok", so each outcome needs its own status.
+  it("returns unknown_provider for an id that was never added", async () => {
+    const state = await registeredHandlers()
+    const result = (await state.handlers["remove"]?.({ providerId: "nope" })) as { status: string }
+    expect(result.status).toBe("unknown_provider")
+  })
+
+  it("returns from_config and claims nothing for a host-config provider", async () => {
+    const state = await registeredHandlers()
+    // A host record the plugin did not create: candidateFrom accepts it, managed never has it.
+    state.records.set("legacy-proxy", {
+      provider: {
+        id: "legacy-proxy",
+        name: "legacy-proxy",
+        activation: "enabled",
+        package: "@opencode/ai/providers/openai-compatible",
+        settings: { baseURL: "https://legacy.example/v1", dynamic: true },
+      },
+      models: new Map(),
+    })
+    await state.context.provider.reload()
+    const result = (await state.handlers["remove"]?.({ providerId: "legacy-proxy" })) as { status: string; message: string }
+    expect(result.status).toBe("from_config")
+    expect(result.message).toContain("left alone")
+    expect(result.message).not.toContain("Removed")
+  })
+
+  it("returns ok for a managed provider", async () => {
+    vi.stubGlobal("fetch", async (input: unknown) => {
+      if (String(input).includes("models.dev")) return new Response("{}", { status: 200 })
+      return new Response(JSON.stringify({ data: [{ id: "model-a" }] }), { status: 200 })
+    })
+    const state = await registeredHandlers()
+    await state.handlers["add"]?.({ providerId: "my-proxy", baseURL: "https://provider.example/v1", apiKey: "test-key" })
+    const result = (await state.handlers["remove"]?.({ providerId: "my-proxy" })) as { status: string; message: string }
+    expect(result.status).toBe("ok")
+    expect(result.message).toContain("Removed 'my-proxy'")
+  })
+})
+
+describe("v2 refresh keeps edits and says so", () => {
+  // A hand-edited model keeps its stored limit on refresh. The reply must say so, and name
+  // the model, so the user knows the endpoint disagrees and why nothing changed.
+  // The live map drives refresh, so the seed goes through the real RPCs: editModel sets
+  // edited and the stored limit, and a second endpoint reading is what refresh compares to.
+  function stubEndpoint(context: number) {
+    vi.stubGlobal("fetch", async (input: unknown) => {
+      if (String(input).includes("models.dev")) return new Response("{}", { status: 200 })
+      return new Response(JSON.stringify({ data: [{ id: "model-a", context_window: context }] }), { status: 200 })
+    })
+  }
+
+  it("keeps a hand-edited limit and names the model in the refresh reply", async () => {
+    stubEndpoint(1000000)
+    const state = await registeredHandlers()
+    await state.handlers["add"]?.({ providerId: "my-proxy", baseURL: "https://provider.example/v1", apiKey: "test-key" })
+    const edit = (await state.handlers["editModel"]?.({
+      providerId: "my-proxy",
+      modelId: "model-a",
+      reasoning: "off",
+      image: true,
+      context: 50000,
+    })) as { status: string }
+    expect(edit.status).toBe("ok")
+    const result = (await state.handlers["refresh"]?.({})) as { message: string }
+    expect(result.message).toContain("Kept your edits")
+    expect(result.message).toContain("my-proxy/model-a")
+    const stored = state.records.get("my-proxy")?.models.get("model-a") as { limit?: { context?: number } }
+    expect(stored.limit?.context).toBe(50000)
+  })
+
+  it("removes a vanished model on refresh and names it in the reply", async () => {
+    vi.stubGlobal("fetch", async (input: unknown) => {
+      if (String(input).includes("models.dev")) return new Response("{}", { status: 200 })
+      return new Response(JSON.stringify({ data: [{ id: "model-a" }, { id: "model-b" }] }), { status: 200 })
+    })
+    const state = await registeredHandlers()
+    await state.handlers["add"]?.({ providerId: "my-proxy", baseURL: "https://provider.example/v1", apiKey: "test-key" })
+    vi.stubGlobal("fetch", async (input: unknown) => {
+      if (String(input).includes("models.dev")) return new Response("{}", { status: 200 })
+      return new Response(JSON.stringify({ data: [{ id: "model-a" }] }), { status: 200 })
+    })
+    const result = (await state.handlers["refresh"]?.({})) as { message: string }
+    expect(result.message).toContain("Removed no longer offered: my-proxy/model-b.")
+    const models = state.records.get("my-proxy")?.models
+    expect(models?.has("model-a")).toBe(true)
+    expect(models?.has("model-b")).toBe(false)
+  })
+
+  it("keeps stored models when the probe fails", async () => {
+    vi.stubGlobal("fetch", async (input: unknown) => {
+      if (String(input).includes("models.dev")) return new Response("{}", { status: 200 })
+      return new Response(JSON.stringify({ data: [{ id: "model-a" }, { id: "model-b" }] }), { status: 200 })
+    })
+    const state = await registeredHandlers()
+    await state.handlers["add"]?.({ providerId: "my-proxy", baseURL: "https://provider.example/v1", apiKey: "test-key" })
+    vi.stubGlobal("fetch", async () => new Response("connection refused", { status: 503 }))
+    const result = (await state.handlers["refresh"]?.({})) as { message: string }
+    expect(result.message).not.toContain("Removed no longer offered")
+    const models = state.records.get("my-proxy")?.models
+    expect(models?.has("model-a")).toBe(true)
+    expect(models?.has("model-b")).toBe(true)
+  })
+
+  it("keeps stored models when the endpoint answers with an empty list", async () => {
+    vi.stubGlobal("fetch", async (input: unknown) => {
+      if (String(input).includes("models.dev")) return new Response("{}", { status: 200 })
+      return new Response(JSON.stringify({ data: [{ id: "model-a" }, { id: "model-b" }] }), { status: 200 })
+    })
+    const state = await registeredHandlers()
+    await state.handlers["add"]?.({ providerId: "my-proxy", baseURL: "https://provider.example/v1", apiKey: "test-key" })
+    vi.stubGlobal("fetch", async (input: unknown) => {
+      if (String(input).includes("models.dev")) return new Response("{}", { status: 200 })
+      return new Response(JSON.stringify({ data: [] }), { status: 200 })
+    })
+    const result = (await state.handlers["refresh"]?.({})) as { message: string }
+    expect(result.message).not.toContain("Removed no longer offered")
+    const models = state.records.get("my-proxy")?.models
+    expect(models?.has("model-a")).toBe(true)
+    expect(models?.has("model-b")).toBe(true)
+  })
+
+  it("does not claim kept edits for an unedited model with differing limits", async () => {
+    // Stored 50000 from the first probe, unedited; refresh then reads 1000000 and updates it.
+    stubEndpoint(50000)
+    const state = await registeredHandlers()
+    await state.handlers["add"]?.({ providerId: "my-proxy", baseURL: "https://provider.example/v1", apiKey: "test-key" })
+    stubEndpoint(1000000)
+    const result = (await state.handlers["refresh"]?.({})) as { message: string }
+    expect(result.message).not.toContain("Kept your edits")
+  })
+})
+
 describe("adding over an existing provider", () => {
   // add and manualAdd used to replace a tuned provider unconditionally. A second TUI
   // window or an agent tool call could therefore wipe a model list with no confirmation,

@@ -4,96 +4,121 @@
 [![license](https://img.shields.io/badge/license-MIT-green)](./LICENSE)
 [![CI](https://github.com/bagasdevs/opencode-custom-providers/actions/workflows/ci.yml/badge.svg)](https://github.com/bagasdevs/opencode-custom-providers/actions)
 
-Interactive wizard for managing custom LLM providers in OpenCode: add providers,
-re-probe their models, and edit everything afterwards from the TUI or via agent tools.
+Add your own AI model providers to OpenCode with a few questions. The plugin finds the
+models for you, and you can change or remove them later from the same menu.
 
-Works on OpenCode 1 and OpenCode 2. The default export serves both hosts
-(`{ id, server, setup }`); v1 resolves `./server` and `./tui`, v2 resolves `.`
-and `./tui`.
+| If you use | Install | Menu |
+| --- | --- | --- |
+| **OpenCode v1** (`>= 1.14.0`) | Steps below | Separate slash commands, such as `/add-provider` |
+| **OpenCode v2** (`>= 2.0.0`) | Steps below | One menu: `/custom-providers` |
 
-## Quick Start
+Not sure which one you have? Check the version shown by `opencode`.
 
-**1. Install the plugin**
+## Install
 
 ```bash
 opencode plugin add opencode-custom-providers
 ```
 
-**Or:**
-
-```bash
-bun add github:bagasdevs/opencode-custom-providers && bun pm trust opencode-custom-providers
-```
-
-**2. Confirm it loaded**
+Then check that it loaded and restart OpenCode:
 
 ```bash
 opencode plugin opencode-custom-providers
 ```
 
-**3. Restart opencode, open the TUI, run `/custom-providers`, and follow the prompts:**
-pick a flavor (e.g. OpenAI Chat), enter the base URL and API key, done.
-Models are discovered and enriched automatically.
+Installing from GitHub instead: `bun add github:bagasdevs/opencode-custom-providers && bun pm trust opencode-custom-providers`.
 
-## Features
+## Add your first provider
 
-- **OpenCode 2 support** - v2 server plugin (provider registry + credentials + agent tools) and v2 TUI plugin (palette and slash commands); v1 keeps its own entrypoints
-- **Wizard** - TUI slash commands and agent tools over one shared layer
-- **Catalog add** - take a models.dev site's URL and model list, no probing
-- **5 flavors** - OpenAI Chat/Responses, Anthropic, Gemini, Ollama
-- **Tiered metadata** - gateway > models.dev > local rules > fallback; cost is never guessed
-- **Tri-state reconcile** - apply / keep / remove per model; stored fields survive
-- **Full edit** - rename, endpoint, flavor, key, display style, per-model fields, bulk delete
-- **Honest security** - auth-store keys, fail loudly, rotation purges inline copies
+Use the same steps on both versions. Only the way you open the menu is different.
 
-## Commands
+1. Open the menu:
+   - **OpenCode v2:** type `/custom-providers`.
+   - **OpenCode v1:** type `/add-provider`.
+2. Choose **My own API**.
+3. Enter the address (for example `https://api.example.com/v1`) and your API key.
+4. Wait a few seconds. The models are found and saved for you.
 
-Slash commands are what you type; agent tools are what the model calls. They are separate
-namespaces: an agent tool never appears in the palette, and a slash command is never callable
-by the model.
+Want a provider without checking the address? Choose **Built-in list** instead.
 
-### TUI slash commands
+## Using the menu
 
-OpenCode 2 keeps the slash list short: one command opens a menu with every flow in it, and the
-menu comes back after each action so several things can be done in one visit. OpenCode 1 still
-registers the flows as separate commands, under the names in the right-hand column.
+### OpenCode v2: one menu
 
-| `/custom-providers` menu entry | OpenCode 1 command | What it does |
+Type `/custom-providers` and pick one of these:
+
+| Choice | What it does |
+| --- | --- |
+| List my providers | Shows each provider and its models |
+| Add a provider | Adds one. Choose **My own API** or **Built-in list** |
+| Edit a provider | Changes a provider (see the list below) |
+| Delete a provider | Removes a provider and its models |
+| Reload all models | Refreshes the models of every provider |
+
+The menu stays open after each action, so you can do several things in one visit. Press Esc to go back one step. Press Esc at the top menu to leave.
+
+**Edit a provider** lists these choices, in this order:
+
+1. **Base URL**: the address of the provider.
+2. **API key**: replace the saved key. Leave it empty and confirm to remove the key.
+3. **API type**: how the provider talks (most providers use OpenAI Chat).
+4. **Model names**: show model ids or friendly names.
+5. **Add models manually**: type model names yourself.
+6. **Delete models**: remove one or more models.
+7. **Model settings**: thinking level, image support, and length limits.
+8. **Rename**: change the provider's name.
+
+If a model's limits differ from what the provider reports, Reload says so and names the model. You can then choose **Use the endpoint's values** while editing it.
+
+### OpenCode v1: separate commands
+
+OpenCode v1 has one command per task. Type the command name:
+
+| Command | What it does |
+| --- | --- |
+| `/list-custom-providers` | Shows each provider and its models |
+| `/add-provider` | Adds a provider. Choose **My own API** or **Built-in list** |
+| `/edit-provider` | Changes a provider |
+| `/delete-provider` | Removes a provider and its models |
+| `/reload-models` | Refreshes the models of every provider |
+| `/add-known-provider` | Adds a provider from the built-in list |
+| `/reprobe-models` | Checks a provider again and shows what changed |
+
+Press Esc to cancel. Esc reports the cancellation once.
+
+## Difference between the two versions
+
+| | OpenCode v1 | OpenCode v2 |
 | --- | --- | --- |
-| Add a provider | `/add-provider` | Set up a new API provider step by step (probes the endpoint) |
-| Add a known provider | `/add-known-provider` | Pick a provider from the built-in models.dev list (no probing) |
-| List my providers | `/list-custom-providers` | Show every custom provider and its models |
-| Check for new models | `/check-for-new-models` (`reprobe-models`) | Ask one provider whether it has new models |
-| Review model changes | `/review-model-changes` (`apply-reconcile`) | See what changed and choose what to keep |
-| Reload all models | `/reload-models` (`refresh-models`) | Refresh every provider from its own address |
-| Edit a provider | `/edit-provider` | Change a provider's address, API type, key, or model naming |
-| Delete a provider | `/delete-provider` | Remove a provider and its models |
+| Open the menu | Separate commands | `/custom-providers` |
+| Reload | `/reload-models` | Reload all models in the menu |
+| Review model changes | `/reprobe-models` | Use Reload, then Edit |
+| Plugin entry points | `./server`, `./tui` | `.` (server), `./tui` |
 
-Inside the wizards, Esc goes back one level instead of abandoning the whole flow: at a field it
-returns to that wizard's menu, and at a step of a linear form it returns to the previous step.
-Esc at the top menu is the only exit, and it reports the cancellation once.
+An OpenCode v1 plugin does not run on OpenCode v2. To move to OpenCode v2, run `opencode upgrade --major`, then install the plugin again.
 
-OpenCode 1 has no list, catalog or review flow of its own; the catalog and reconcile flows live
-inside its own wizards instead.
+## For the AI assistant (agent tools)
 
-### Agent tools
+The model can call these tools. You do not type them yourself. Ask in plain words, for example "add a provider at this address".
 
-| OpenCode 1 | OpenCode 2 | What it does |
-| --- | --- | --- |
-| `add-provider` | `add-provider` | Add a provider by probing its endpoint |
-| `add-from-catalog` | `add-from-catalog` | Add a provider from the models.dev catalog (no probing) |
-| `list-catalog-sites` | `list-catalog-sites` | List catalog sites to pick from |
-| : | `manual-add-models` | Add model ids by hand when an endpoint cannot list them |
-| : | `list-custom-providers` | List configured providers and their models |
-| `reprobe-models` | `reprobe-models` | Re-probe one provider and list model changes |
-| `apply-reconcile` | `apply-reconcile` | Persist reconcile decisions |
-| `refresh-models` | `refresh-models` | Re-discover models for every provider |
-| `edit-provider` | : | Edit an existing provider |
-| : | `rename-provider` | Rename a provider, keeping its models, address and key |
-| `delete-provider` | `delete-provider` | Remove a provider |
-| `delete-models` | `delete-models` | Remove individual models (on v2, all of them or nothing) |
+| Tool | OpenCode v1 | OpenCode v2 | What it does |
+| --- | --- | --- | --- |
+| `add-provider` | yes | yes | Adds a provider by checking its address |
+| `add-from-catalog` | yes | yes | Adds a provider from the models.dev catalog, without checking |
+| `list-catalog-sites` | yes | yes | Lists the catalog sites to choose from |
+| `manual-add-models` | | yes | Adds model ids by hand when the provider cannot list them |
+| `list-custom-providers` | | yes | Lists providers and their models |
+| `reprobe-models` | yes | yes | Checks one provider and lists model changes |
+| `apply-reconcile` | yes | yes | Saves your decisions about model changes |
+| `refresh-models` | yes | yes | Refreshes the models of every provider |
+| `edit-provider` | yes | | Edits a provider |
+| `rename-provider` | | yes | Renames a provider and keeps its models, address and key |
+| `delete-provider` | yes | yes | Removes a provider |
+| `delete-models` | yes | yes | Removes models (on OpenCode v2, all of them or none) |
 
 ## Configuration
+
+A provider is saved in OpenCode's config. You can also write one by hand:
 
 ```json
 {
@@ -107,27 +132,32 @@ inside its own wizards instead.
 }
 ```
 
-Discovery runs for providers with `options.baseURL` plus `dynamic: true` or no stored models.
+The plugin looks for models on providers that have `options.baseURL` and either `"dynamic": true` or no saved models.
 
-Keys: auth store · `OPENCODE_LOCAL_<ID>_API_KEY` · legacy inline `apiKey`
-(migrates on next edit, never written). Rules: `~/.opencode-custom-providers-rules.json`.
+**Where the API key is stored**, in order of preference:
 
-## Development
+1. OpenCode's own credential store (the menu saves here).
+2. An environment variable: `OPENCODE_LOCAL_<ID>_API_KEY`, where `<ID>` is the provider id in capitals.
+3. An old inline `apiKey` in the config. It moves to the credential store the next time you edit the provider, and is never written again.
+
+Model rules are kept in `~/.opencode-custom-providers-rules.json`.
+
+## Security
+
+- Keys are kept in OpenCode's credential store, not in plain text in your project.
+- Error messages hide keys and tokens before they are shown or logged.
+- A provider that comes from OpenCode's own config is shown but not changed by the plugin.
+
+## For developers
 
 ```bash
-npm install && npm run build   # clean dist/, then tsc
-npm test                       # build + node tests
-npm run test:src               # vitest (202 tests)
-npm run typecheck:tests        # typecheck src + tests
-npm run lint                   # eslint
+npm install && npm run build   # clear dist/, then compile with tsc
+npm test                       # build, then run the node tests
+npm run test:src               # run the vitest suite
+npm run typecheck:tests        # type-check src and tests
+npm run lint                   # run eslint
+npm run bundles                # rebuild the bundles in bundles/
 ```
-
-## Limits
-
-- Bounded network per dynamic provider at startup (15s timeouts; failures never block)
-- `reasoningLevels` is recorded, and a thinking-level edit does reach the model picker (`applyModelFields` writes `variants`, the field the host reads)
-- `supportsDeveloperRole` is recorded but inert (opencode never reads that key)
-- TUI dialogs are single-select, so review is sequential
 
 ## License
 

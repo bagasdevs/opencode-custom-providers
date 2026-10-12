@@ -10,7 +10,7 @@ import {
   persistProviderApiKey,
   rotateProviderApiKey,
   reprobeProvider,
-  applyReconcile,
+  reprobeAndReconcile,
   renameProviderEntry,
   deleteProviderEntry,
   deleteModels,
@@ -120,7 +120,7 @@ export const server: Plugin = async ({ client }) => {
       "refresh-models": tool({
         description:
           "Re-discover models from all dynamic providers and update the live config. " +
-          "Clears the models.dev metadata cache, fetches /models from every provider " +
+          "Fetches /models from every provider " +
           "with a baseURL, enriches them, and persists the updated config.",
         args: {},
         async execute() {
@@ -278,16 +278,15 @@ export const server: Plugin = async ({ client }) => {
             decisions[id] = d
           }
 
-          let rep
+          let result
           try {
-            rep = await reprobeProvider(args.providerId, provider)
+            result = await reprobeAndReconcile(args.providerId, provider, decisions)
           } catch (error) {
             return `Re-probe failed: ${sanitizeErrorMessage(error)}`
           }
-          const next = applyReconcile(provider, rep.fresh, decisions)
-          provider.models = next
+          provider.models = result.models
           await bridge.updateProviders(providers)
-          return `Reconciled '${args.providerId}': ${rep.fresh.length} model(s) probed, ${Object.keys(next).length} stored.`
+          return `Reconciled '${args.providerId}': ${result.rep.fresh.length} model(s) probed, ${Object.keys(result.models).length} stored.`
         },
       }),
 
@@ -321,9 +320,6 @@ export const server: Plugin = async ({ client }) => {
             if (error) return error
             targetId = args.rename.trim()
             if (warning) notes.push(warning)
-            if (args.apiKey === undefined) {
-              notes.push(`Stored credential (if any) is still keyed by '${oldId}': pass apiKey to move it.`)
-            }
           }
           const entry = providers[targetId]
 
@@ -370,8 +366,8 @@ export const server: Plugin = async ({ client }) => {
 
           if (args.baseURL !== undefined || args.flavor !== undefined) {
             try {
-              const rep = await reprobeProvider(targetId, entry)
-              entry.models = applyReconcile(entry, rep.fresh, {})
+              const result = await reprobeAndReconcile(targetId, entry, {})
+              entry.models = result.models
               notes.push(`Re-probed: ${Object.keys(entry.models).length} model(s) stored.`)
             } catch (error) {
               notes.push(`Models unchanged (probe failed: ${sanitizeErrorMessage(error)}).`)

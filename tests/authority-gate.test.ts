@@ -144,6 +144,19 @@ describe("probedToDraftKeepingEdits edited path is unchanged", () => {
     expect(next.cost).toEqual([{ input: 3, output: 7, cache: { read: 0, write: 0 } }])
     expect(next.edited).toBe(true)
   })
+
+  it("a hand-tuned limit stays put on refresh, even when the endpoint now reports a detected value", () => {
+    // Reproduces the reload report: endpoint says 1000000 (detected), stored draft was edited.
+    const tuned = storedDraft({ edited: true, limit: { context: 500_000, output: 32_000 } })
+    const detected = guessedProbe({
+      context: 1_000_000,
+      contextSource: "detected",
+      maxOutput: 64_000,
+      maxOutputSource: "detected",
+    })
+    const next = probedToDraftKeepingEdits(tuned, detected)
+    expect(next.limit).toEqual({ context: 500_000, output: 32_000 })
+  })
 })
 
 describe("mergeAppliedModel with sources", () => {

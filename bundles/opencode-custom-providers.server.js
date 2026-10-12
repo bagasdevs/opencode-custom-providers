@@ -35,7 +35,10 @@ function sanitizeErrorMessage(error) {
     /https?:\/\/[^\s"'`<>]+/gi,
     (match) => sanitizeUrl(match)
   );
-  const redacted = message.replaceAll(/Bearer\s+[^\s]+/gi, "Bearer [REDACTED]").replaceAll(/api[_-]?key[=:]\s*[^\s&]+/gi, "api_key=[REDACTED]").replaceAll(/sk-[a-zA-Z0-9_-]+/g, "sk-[REDACTED]").replaceAll(/\b(key|token|access_token|password)=[^\s&]+/gi, "$1=[REDACTED]");
+  const redacted = message.replaceAll(
+    /("(?:api[_-]?key|token|password|authorization)"\s*:\s*)"[^"]*"/gi,
+    '$1"[REDACTED]"'
+  ).replaceAll(/Bearer\s+[^\s]+/gi, "Bearer [REDACTED]").replaceAll(/api[_-]?key[=:]\s*[^\s&]+/gi, "api_key=[REDACTED]").replaceAll(/sk-[a-zA-Z0-9_-]+/g, "sk-[REDACTED]").replaceAll(/\b(key|token|access_token|password)=[^\s&]+/gi, "$1=[REDACTED]");
   const printable = sanitizeDialogText(redacted);
   return printable.length > 400 ? `${printable.slice(0, 400)}\u2026` : printable;
 }
@@ -219,17 +222,9 @@ async function getLookupMap() {
   }
   return lookupPromise;
 }
-function clearModelsDevCache() {
+function resetModelsDevLookup() {
   lookupMap = null;
   lookupPromise = null;
-  catalogPromise = null;
-  try {
-    const file = cacheFile();
-    if (!fs.existsSync(file)) return;
-    const mtimeMs = fs.statSync(file).mtimeMs;
-    if (Date.now() - mtimeMs > CACHE_TTL) fs.unlinkSync(file);
-  } catch {
-  }
 }
 async function getCatalog() {
   if (!catalogPromise) {
@@ -549,7 +544,16 @@ async function fetchLitellmInfo(origin, id2, apiKey) {
   if (Object.keys(patch).length === 0) throw new Error("Empty LiteLLM info");
   return patch;
 }
+var PUBLIC_CATALOG_TTL_MS = 10 * 60 * 1e3;
+var publicCatalogCache = /* @__PURE__ */ new Map();
 async function fetchPublicCatalog(origin) {
+  const hit = publicCatalogCache.get(origin);
+  if (hit && Date.now() - hit.at < PUBLIC_CATALOG_TTL_MS) return hit.map;
+  const map = await fetchPublicCatalogUncached(origin);
+  publicCatalogCache.set(origin, { at: Date.now(), map });
+  return map;
+}
+async function fetchPublicCatalogUncached(origin) {
   const raw = await getJson(`${origin}/api/models/public`, authHeaders(), 8e3);
   const list = Array.isArray(raw) ? raw : Array.isArray(raw["data"]) ? raw["data"] : [];
   const map = /* @__PURE__ */ new Map();
@@ -945,7 +949,8 @@ async function probeEndpointOutcome(baseURL, apiKey, flavor = DEFAULT_FLAVOR) {
   if (FLAVORS[flavor].listShape === "none") {
     return { models: [], baseURL, listUnsupported: true };
   }
-  const lookup = await getLookupMap();
+  const lookupPromise2 = getLookupMap();
+  lookupPromise2.catch(() => void 0);
   const customs = loadCustomRules();
   const candidates = buildCandidateUrls(baseURL);
   let lastError = null;
@@ -953,6 +958,7 @@ async function probeEndpointOutcome(baseURL, apiKey, flavor = DEFAULT_FLAVOR) {
     try {
       const items = await fetchFlavorModels(candidate, apiKey, flavor);
       if (items.length > 0) {
+        const lookup = await lookupPromise2;
         let origin = "";
         try {
           origin = new URL(candidate).origin;
@@ -1287,10 +1293,9 @@ async function reloadAllProviders(providers) {
     errors: []
   };
   if (dynamicProviders.length === 0) return result;
-  clearModelsDevCache();
+  resetModelsDevLookup();
   const outcomes = await chunkedAllSettled(
-    dynamicProviders.map(([id2, cfg]) => () => reloadOneProvider(id2, cfg)),
-    4
+    dynamicProviders.map(([id2, cfg]) => () => reloadOneProvider(id2, cfg))
   );
   for (const outcome of outcomes) {
     if (outcome.status === "rejected") {
@@ -1307,6 +1312,11 @@ async function reloadAllProviders(providers) {
     }
     if (models) {
       const providerConfig = providers[providerId];
+      const previousIds = Object.keys(providerConfig.models ?? {});
+      const vanished = previousIds.filter((id2) => !(id2 in models));
+      if (vanished.length > 0) {
+        result.warnings.push(`${providerId} no longer lists: ${vanished.join(", ")}. These were removed.`);
+      }
       providerConfig.models = models;
       result.totalModels += Object.keys(models).length;
     }
@@ -1414,6 +1424,10 @@ function applyReconcile(provider, fresh, decisions) {
   const displayStyle = provider.displayStyle ?? "slug";
   const current = provider.models ?? {};
   return applyDecisions(current, fresh, decisions, displayStyle);
+}
+async function reprobeAndReconcile(providerId, provider, decisions) {
+  const rep = await reprobeProvider(providerId, provider);
+  return { rep, models: applyReconcile(provider, rep.fresh, decisions) };
 }
 function renameProviderEntry(providers, oldId, newId) {
   const clean = newId.trim();
@@ -1584,7 +1598,9 @@ function mergeDiscoveredIntoStored(target, fresh) {
     if (value === void 0) continue;
     const current = target[key];
     if (value !== null && typeof value === "object" && !Array.isArray(value) && current !== null && typeof current === "object" && !Array.isArray(current)) {
-      mergeDiscoveredIntoStored(current, value);
+      const copy = { ...current };
+      mergeDiscoveredIntoStored(copy, value);
+      target[key] = copy;
       continue;
     }
     target[key] = value;
@@ -1741,21 +1757,33 @@ function envKeyNames(providerId) {
 function validId(providerId) {
   return /^[a-zA-Z0-9_-]+$/.test(providerId);
 }
+function endpointLimitsDiffer(draft, probed) {
+  const stored = draft.limit ?? {};
+  const contextDiffers = isAuthoritative(probed.contextSource) && probed.context !== void 0 && probed.context !== stored.context;
+  const outputDiffers = isAuthoritative(probed.maxOutputSource) && probed.maxOutput !== void 0 && probed.maxOutput !== stored.output;
+  return contextDiffers || outputDiffers;
+}
+function applyEndpointLimits(draft, probed) {
+  const limit = { ...draft.limit };
+  if (probed.context !== void 0 && isAuthoritative(probed.contextSource)) limit.context = probed.context;
+  if (probed.maxOutput !== void 0 && isAuthoritative(probed.maxOutputSource)) limit.output = probed.maxOutput;
+  draft.limit = limit;
+}
 function probeHint(error) {
   const text = sanitizeErrorMessage(error);
   if (/\b(401|403)\b|revoked|unauthorized|invalid api key/i.test(text)) {
-    return "The endpoint rejected the API key. Check that the key is correct and still active, then try again.";
+    return "The provider rejected the API key. Check that the key is correct and still active, then try again.";
   }
   if (/\b404\b/.test(text)) {
-    return "The endpoint answered 404 (not found). Check the base URL - for OpenAI-compatible APIs it usually ends with /v1.";
+    return "The provider's address was not found (404). Check the Base URL. It often ends with /v1.";
   }
   if (/timed out|timeout|ENOTFOUND|ECONNREFUSED|fetch failed/i.test(text)) {
-    return "The endpoint could not be reached. Check the base URL and your internet connection.";
+    return "The provider could not be reached. Check the Base URL and your internet connection.";
   }
   return "Check the base URL and the API key, then try again.";
 }
 function zeroModelsHint(hasKey) {
-  return hasKey ? "The endpoint listed no models. Check the base URL - it usually ends with /v1." : "The endpoint listed no models. Most gateways need an API key before they list models: add one and re-probe.";
+  return hasKey ? "The endpoint listed no models. Check the base URL - it usually ends with /v1." : 'The provider sent no models. Most providers need an API key first: add one, then pick "Reload all models".';
 }
 function storedModelView(modelId, draft) {
   const model = { name: typeof draft.name === "string" ? draft.name : modelId, limit: {} };
@@ -1901,7 +1929,12 @@ var setup = async (ctx) => {
       );
       if (candidate) found.set(providerId, candidate);
     }
+    const configIds = new Set(
+      providers.list().filter((record) => !managed.has(record.provider.id) && record.provider.settings?.dynamic !== false).map((record) => record.provider.id)
+    );
     for (const providerId of removed) {
+      if (collisionSuggestion(providerId)) continue;
+      if (configIds.has(providerId)) continue;
       providers.update(providerId, (provider) => {
         provider.activation = "disabled";
       });
@@ -1990,18 +2023,19 @@ var setup = async (ctx) => {
     await reloadQuietly();
   };
   const refresh = async (only) => {
-    const outcome = { checked: 0, updated: [], unchanged: [], empty: [], failed: [] };
+    const outcome = { checked: 0, updated: [], unchanged: [], empty: [], failed: [], keptEdits: [], vanished: [] };
     let changed = false;
-    for (const candidate of [...candidates.values()]) {
-      if (only !== void 0 && candidate.providerId !== only) continue;
-      outcome.checked++;
-      let fresh;
-      try {
-        fresh = await discover(candidate);
-      } catch {
+    const droppedPairs = [];
+    const picked = [...candidates.values()].filter((c) => only === void 0 || c.providerId === only);
+    outcome.checked = picked.length;
+    const probes = await chunkedAllSettled(picked.map((c) => () => discover(c)));
+    for (const [i, candidate] of picked.entries()) {
+      const settled = probes[i];
+      if (settled.status === "rejected") {
         outcome.failed.push(candidate.providerId);
         continue;
       }
+      const fresh = settled.value;
       lastProbe.set(candidate.providerId, fresh.models.length);
       lastProbeModels.set(candidate.providerId, fresh.models);
       if (fresh.models.length === 0) {
@@ -2010,7 +2044,20 @@ var setup = async (ctx) => {
       }
       const models = modelsFor(candidate.providerId);
       const before = fingerprint(models);
-      for (const probed of fresh.models) models.set(probed.id, probedToDraftKeepingEdits(models.get(probed.id), probed, candidate.displayStyle));
+      for (const probed of fresh.models) {
+        const stored = models.get(probed.id);
+        models.set(probed.id, probedToDraftKeepingEdits(stored, probed, candidate.displayStyle));
+        if (stored?.edited === true && endpointLimitsDiffer(stored, probed)) {
+          outcome.keptEdits.push(`${candidate.providerId}/${probed.id}`);
+        }
+      }
+      const answered = new Set(fresh.models.map((item) => item.id));
+      for (const modelId of [...models.keys()]) {
+        if (answered.has(modelId)) continue;
+        models.delete(modelId);
+        outcome.vanished.push(`${candidate.providerId}/${modelId}`);
+        droppedPairs.push([candidate.providerId, modelId]);
+      }
       if (fingerprint(models) === before) outcome.unchanged.push(candidate.providerId);
       else outcome.updated.push(candidate.providerId);
       rememberAnsweredUrl(candidate, fresh);
@@ -2018,6 +2065,13 @@ var setup = async (ctx) => {
     }
     if (changed) {
       await persist();
+      if (droppedPairs.length > 0) {
+        await ctx.provider.transform((providers) => {
+          for (const [providerId, modelId] of droppedPairs) {
+            if (!discovered.get(providerId)?.has(modelId)) providers.models.remove(providerId, modelId);
+          }
+        });
+      }
       await reloadQuietly();
     }
     return outcome;
@@ -2326,6 +2380,7 @@ Technical detail: ${sanitizeErrorMessage(error)}` };
         message: "",
         models: [...models.entries()].map(([modelId, draft]) => {
           const fields = readModelFields(draft);
+          const probed = lastProbeModels.get(input.providerId)?.find((item) => item.id === modelId);
           const row = {
             id: modelId,
             // Endpoint-provided, so it can carry control characters that break a host
@@ -2337,6 +2392,7 @@ Technical detail: ${sanitizeErrorMessage(error)}` };
           };
           if (fields.context !== void 0) row.context = fields.context;
           if (fields.output !== void 0) row.output = fields.output;
+          if (probed && endpointLimitsDiffer(draft, probed)) row.endpointDiffers = true;
           return row;
         }).sort((a, b) => a.id.localeCompare(b.id))
       };
@@ -2378,13 +2434,38 @@ Technical detail: ${sanitizeErrorMessage(error)}` };
         message: `Saved '${input.modelId}': reasoning ${reasoningLabel(saved.reasoning)}, image input ${saved.image ? "on" : "off"}, context ${saved.context ?? "unset"}, longest reply ${saved.output ?? "unset"}.`
       };
     },
+    useEndpointValues: async (input) => {
+      const candidate = candidates.get(input.providerId);
+      if (!candidate) return { status: "unknown_provider", message: `There is no provider named '${input.providerId}'. Run /custom-providers and choose "List my providers" to see them.` };
+      const models = discovered.get(input.providerId);
+      const draft = models?.get(input.modelId);
+      if (!models || !draft) return { status: "unknown_model", message: `Provider '${input.providerId}' has no model named '${input.modelId}'. Run /custom-providers and choose "Edit a provider" to check its models.` };
+      let fresh;
+      try {
+        fresh = await discover(candidate);
+      } catch (error) {
+        return { status: "unavailable", message: `Nothing was changed: the address ${candidate.baseURL} did not answer with a model list.
+${probeHint(error)}
+
+Technical detail: ${sanitizeErrorMessage(error)}` };
+      }
+      lastProbe.set(input.providerId, fresh.models.length);
+      lastProbeModels.set(input.providerId, fresh.models);
+      const probed = fresh.models.find((item) => item.id === input.modelId);
+      if (!probed) return { status: "unknown_model", message: `The endpoint no longer lists '${input.modelId}', so its values could not be read. Nothing was changed.` };
+      applyEndpointLimits(draft, probed);
+      await persist();
+      await reloadQuietly();
+      return { status: "ok", message: `Updated ${input.modelId} from the endpoint.` };
+    },
     remove: async (providerId) => {
       const wasManaged = managed.delete(providerId);
       if (!wasManaged && !candidates.has(providerId)) {
-        return { message: `There is no provider named '${providerId}'. Run /custom-providers and choose "List my providers" to see them.` };
+        return { status: "unknown_provider", message: `There is no provider named '${providerId}'. Run /custom-providers and choose "List my providers" to see them.` };
       }
       if (!wasManaged) {
         return {
+          status: "from_config",
           message: `'${providerId}' comes from your opencode config, not from this plugin, so it was left alone.
 Remove its entry from your opencode config to stop using it, or use /custom-providers, then "Edit a provider", to point it elsewhere.`
         };
@@ -2406,6 +2487,7 @@ Remove its entry from your opencode config to stop using it, or use /custom-prov
       discovered.delete(providerId);
       await reloadQuietly();
       return {
+        status: "ok",
         message: `Removed '${providerId}' and its ${staleModels.length} model${staleModels.length === 1 ? "" : "s"}. Your other opencode settings are not touched. You can add it again later from /custom-providers.`
       };
     },
@@ -2458,7 +2540,7 @@ Restart opencode and run this again, or use 'Apply everything' which does not ne
       if (vanished.length > PREVIEW) lines.push(`  - ...and ${vanished.length - PREVIEW} more removed`);
       if (changes.length > 0) {
         lines.push("");
-        lines.push('Nothing has changed yet. Run "Reload all models" to apply everything, or "Review model changes" to choose.');
+        lines.push('Nothing has changed yet. Pick "Reload all models" to apply everything.');
       }
       return { message: lines.join("\n"), changes: changes.map((change) => ({ id: change.id, kind: change.kind, detail: change.detail })) };
     },
@@ -2533,13 +2615,22 @@ Technical detail: ${sanitizeErrorMessage(error)}` };
       const lines = [`Checked ${outcome.checked} provider(s).`];
       if (outcome.updated.length > 0) lines.push(`Updated: ${outcome.updated.join(", ")}.`);
       if (outcome.unchanged.length > 0) lines.push(`Already up to date: ${outcome.unchanged.join(", ")}.`);
+      if (outcome.keptEdits.length > 0) {
+        lines.push(
+          `Kept your edits, the endpoint reports other limits: ${outcome.keptEdits.join(", ")}.
+To use the endpoint's values, open 'Edit a provider', pick the model, then 'Use the endpoint's values'.`
+        );
+      }
+      if (outcome.vanished.length > 0) {
+        lines.push(`Removed no longer offered: ${outcome.vanished.join(", ")}.`);
+      }
       if (outcome.empty.length > 0) {
         lines.push(`Answered but listed no models: ${outcome.empty.join(", ")}.`);
       }
       if (outcome.failed.length > 0) {
         lines.push(
           `Could not reach: ${outcome.failed.join(", ")}. Their saved models were kept.
-Fix it with /custom-providers: 'Edit a provider' to check the address and the API key, then 'Reload all models'.`
+Use 'Edit a provider', then 'Reload all models'.`
         );
       }
       if (outcome.updated.length === 0 && outcome.failed.length === 0 && outcome.empty.length === 0) {
@@ -2631,6 +2722,51 @@ Technical detail: ${sanitizeErrorMessage(error)}`);
         deleted: wanted.length
       };
     },
+    /** Removes the saved API key. The host interface exposes no credential delete, so an empty
+     * key is written through the same connect.key path the save uses. Whether the host treats
+     * "" as a removal is unverified: the host's behaviour must be checked on a real install. */
+    clearKey: async (input) => {
+      if (!managed.has(input.providerId) && !candidates.has(input.providerId)) {
+        return { message: `There is no provider named '${input.providerId}'. Run /custom-providers and choose "List my providers" to see them.` };
+      }
+      try {
+        await ctx.integration.connect.key({ integrationID: input.providerId, key: "" });
+      } catch (error) {
+        return { message: `The saved API key could NOT be cleared.
+Technical detail: ${sanitizeErrorMessage(error)}` };
+      }
+      return { message: `Cleared the API key for '${input.providerId}'. The provider will be called without a key.` };
+    },
+    /** Appends model ids to an existing provider. Ids already stored are skipped and keep their
+     * settings, so this never rewrites the list or the provider's address, key or style. */
+    addModelIds: async (input) => {
+      const current = managed.get(input.providerId);
+      const models = discovered.get(input.providerId);
+      if (!current || !models) {
+        return {
+          status: "unknown_provider",
+          message: `There is no provider named '${input.providerId}'. Run /custom-providers and choose "List my providers" to see them.`,
+          added: 0,
+          skipped: 0
+        };
+      }
+      const wanted = parseModelIds(input.modelIds) ?? [];
+      if (wanted.length === 0) {
+        return { status: "invalid", message: "Enter at least one model id, separated by commas.", added: 0, skipped: 0 };
+      }
+      const previews = await previewManualModels(wanted, current.flavor ?? DEFAULT_FLAVOR, current.displayStyle ?? "slug");
+      const unique = [...new Map(previews.map((preview) => [preview.id, preview.probed])).values()];
+      const fresh = unique.filter((probed) => !models.has(probed.id));
+      const skipped = unique.length - fresh.length;
+      for (const probed of fresh) models.set(probed.id, probedToDraft(probed, current.displayStyle ?? "slug"));
+      if (fresh.length > 0) {
+        await persist();
+        await reloadQuietly();
+      }
+      const lines = [`Added ${fresh.length} model${fresh.length === 1 ? "" : "s"} to '${input.providerId}'.`];
+      if (skipped > 0) lines.push(`${skipped} already present, kept as they were.`);
+      return { status: "ok", message: lines.join(" "), added: fresh.length, skipped };
+    },
     renameProvider: async (input) => {
       const entry = managed.get(input.providerId);
       if (!entry) {
@@ -2714,8 +2850,8 @@ Pick a different name, or remove '${clean}' with /custom-providers first.`
       await reloadQuietly();
       return {
         status: "ok",
-        message: `Done. '${input.providerId}' is now called '${clean}'. Its models and settings are unchanged.
-An API key saved for '${input.providerId}' stays stored under that name, so if sign-in fails afterwards, add the key again from /custom-providers.`
+        message: `Done. '${input.providerId}' is now called '${clean}'. Models and settings are kept.
+Your API key was not moved. Enter it again for '${clean}' from /custom-providers.`
       };
     }
   };
@@ -2823,7 +2959,8 @@ An API key saved for '${input.providerId}' stays stored under that name, so if s
                     reasoningLabel: { type: "string" },
                     image: { type: "boolean" },
                     context: { type: "number" },
-                    output: { type: "number" }
+                    output: { type: "number" },
+                    endpointDiffers: { type: "boolean" }
                   },
                   required: ["id", "name", "reasoning", "reasoningLabel", "image"],
                   additionalProperties: false
@@ -2865,7 +3002,14 @@ An API key saved for '${input.providerId}' stays stored under that name, so if s
             required: ["providerId"],
             additionalProperties: false
           },
-          output: MESSAGE_OUTPUT
+          output: {
+            type: "object",
+            properties: {
+              status: { type: "string", enum: ["ok", "unknown_provider", "from_config"] },
+              message: { type: "string" }
+            },
+            required: ["status", "message"]
+          }
         },
         deleteModels: {
           input: {
@@ -2950,6 +3094,57 @@ An API key saved for '${input.providerId}' stays stored under that name, so if s
           },
           output: MESSAGE_OUTPUT
         },
+        useEndpointValues: {
+          input: {
+            type: "object",
+            properties: {
+              providerId: { type: "string" },
+              modelId: { type: "string" }
+            },
+            required: ["providerId", "modelId"],
+            additionalProperties: false
+          },
+          output: {
+            type: "object",
+            properties: {
+              status: { type: "string", enum: ["ok", "unknown_provider", "unknown_model", "unavailable"] },
+              message: { type: "string" }
+            },
+            required: ["status", "message"],
+            additionalProperties: false
+          }
+        },
+        addModelIds: {
+          input: {
+            type: "object",
+            properties: {
+              providerId: { type: "string" },
+              modelIds: { type: "string" }
+            },
+            required: ["providerId", "modelIds"],
+            additionalProperties: false
+          },
+          output: {
+            type: "object",
+            properties: {
+              status: { type: "string", enum: ["ok", "invalid", "unknown_provider"] },
+              message: { type: "string" },
+              added: { type: "number" },
+              skipped: { type: "number" }
+            },
+            required: ["status", "message", "added", "skipped"],
+            additionalProperties: false
+          }
+        },
+        clearKey: {
+          input: {
+            type: "object",
+            properties: { providerId: { type: "string" } },
+            required: ["providerId"],
+            additionalProperties: false
+          },
+          output: MESSAGE_OUTPUT
+        },
         refresh: { input: EMPTY_INPUT, output: MESSAGE_OUTPUT },
         "catalog.list": {
           input: EMPTY_INPUT,
@@ -3006,7 +3201,10 @@ An API key saved for '${input.providerId}' stays stored under that name, so if s
       renameProvider: (input) => ops.renameProvider(input),
       reprobe: (input) => ops.reprobe(input.providerId),
       apply: (input) => ops.apply(input),
+      useEndpointValues: (input) => ops.useEndpointValues(input),
       refresh: () => ops.refresh(),
+      addModelIds: (input) => ops.addModelIds(input),
+      clearKey: (input) => ops.clearKey(input),
       "catalog.list": () => ops.catalogList(),
       "catalog.add": (input) => ops.catalogAdd(input)
     }
@@ -3264,7 +3462,7 @@ var server = async ({ client }) => {
     },
     tool: {
       "refresh-models": tool({
-        description: "Re-discover models from all dynamic providers and update the live config. Clears the models.dev metadata cache, fetches /models from every provider with a baseURL, enriches them, and persists the updated config.",
+        description: "Re-discover models from all dynamic providers and update the live config. Fetches /models from every provider with a baseURL, enriches them, and persists the updated config.",
         args: {},
         async execute() {
           const providers = await bridge.getProviders();
@@ -3381,16 +3579,15 @@ var server = async ({ client }) => {
             }
             decisions[id2] = d;
           }
-          let rep;
+          let result;
           try {
-            rep = await reprobeProvider(args.providerId, provider);
+            result = await reprobeAndReconcile(args.providerId, provider, decisions);
           } catch (error) {
             return `Re-probe failed: ${sanitizeErrorMessage(error)}`;
           }
-          const next = applyReconcile(provider, rep.fresh, decisions);
-          provider.models = next;
+          provider.models = result.models;
           await bridge.updateProviders(providers);
-          return `Reconciled '${args.providerId}': ${rep.fresh.length} model(s) probed, ${Object.keys(next).length} stored.`;
+          return `Reconciled '${args.providerId}': ${result.rep.fresh.length} model(s) probed, ${Object.keys(result.models).length} stored.`;
         }
       }),
       "edit-provider": tool({
@@ -3415,9 +3612,6 @@ var server = async ({ client }) => {
             if (error) return error;
             targetId = args.rename.trim();
             if (warning) notes.push(warning);
-            if (args.apiKey === void 0) {
-              notes.push(`Stored credential (if any) is still keyed by '${oldId}': pass apiKey to move it.`);
-            }
           }
           const entry = providers[targetId];
           if (args.baseURL !== void 0) {
@@ -3460,8 +3654,8 @@ var server = async ({ client }) => {
           }
           if (args.baseURL !== void 0 || args.flavor !== void 0) {
             try {
-              const rep = await reprobeProvider(targetId, entry);
-              entry.models = applyReconcile(entry, rep.fresh, {});
+              const result = await reprobeAndReconcile(targetId, entry, {});
+              entry.models = result.models;
               notes.push(`Re-probed: ${Object.keys(entry.models).length} model(s) stored.`);
             } catch (error) {
               notes.push(`Models unchanged (probe failed: ${sanitizeErrorMessage(error)}).`);

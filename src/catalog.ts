@@ -148,6 +148,12 @@ export async function getLookupMap(): Promise<Map<string, ModelsDevModel>> {
   return lookupPromise
 }
 
+// Forgets the in-memory lookup only; the disk cache file is untouched.
+export function resetModelsDevLookup(): void {
+  lookupMap = null
+  lookupPromise = null
+}
+
 export function clearModelsDevCache(): void {
   lookupMap = null
   lookupPromise = null

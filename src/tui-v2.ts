@@ -1,8 +1,8 @@
 import { FLAVORS, collisionSuggestion } from "./flavors.js"
 import { parseTokenEdit, REASONING_LEVELS, reasoningLabel, resolveTokenEdit, type TokenEdit } from "./model-fields.js"
-import { isValidUrl, sanitizeDialogText } from "./security.js"
+import { isValidUrl } from "./security.js"
 import { id as pluginId } from "./ids.js"
-import type { AddProviderResult, ManualAddResult, ProviderRow, ReprobeResult, SiteRow } from "./server-v2.js"
+import type { AddProviderResult, ManualAddResult, ProviderRow, SiteRow } from "./server-v2.js"
 
 export const id = `${pluginId}.tui`
 
@@ -72,12 +72,12 @@ const SIMPLE_OPTIONS: readonly DialogSelectOption[] = [
   {
     title: "Model id",
     value: "slug",
-    description: "Short name, for example gpt-4o. Works everywhere. Safe choice.",
+    description: "Short id, like gpt-4o. Works everywhere.",
   },
   {
     title: "Friendly name",
     value: "name",
-    description: "The provider's own label, when it offers one.",
+    description: "The provider's own label, when it has one.",
   },
 ]
 
@@ -86,6 +86,16 @@ async function call<T>(ctx: V2TuiContext, method: string, input?: unknown): Prom
   // empty object must be sent explicitly for methods that take no arguments.
   const result = await ctx.client.rpc.call({ rpcID: RPC_ID, method, input: input ?? {} })
   return result.output as T
+}
+
+/** Plain text for a thrown value: the message for Errors and message-bearing objects, never "[object Object]". */
+function errorText(error: unknown): string {
+  if (error instanceof Error) return error.message
+  if (typeof error === "string") return error
+  if (error && typeof error === "object" && typeof (error as { message?: unknown }).message === "string") {
+    return (error as { message: string }).message
+  }
+  return "unknown error"
 }
 
 function fail(ctx: V2TuiContext, message: string): void {
@@ -97,7 +107,7 @@ function done(ctx: V2TuiContext, message: string): void {
 }
 
 function statusSuffix(provider: ProviderRow): string {
-  return provider.pending > 0 ? ` (${provider.pending} new model(s) found: run /custom-providers, then "Reload all models", to add them)` : ""
+  return provider.pending > 0 ? ` (${provider.pending} new: pick "Reload all models")` : ""
 }
 
 function cancelled(ctx: V2TuiContext): void {
@@ -112,6 +122,7 @@ interface ModelRow {
   image: boolean
   context?: number
   output?: number
+  endpointDiffers?: boolean
 }
 
 /** Prompts for a token count until it parses, or the user backs out. Returns the
@@ -216,21 +227,21 @@ async function wizardEditModels(ctx: V2TuiContext, providerId: string): Promise<
   }
   if (models.length === 0) {
     ctx.ui.toast.show({
-      message: `'${providerId}' has no models yet. Fix its address and key with /custom-providers: "Edit a provider", then "Reload all models".`,
+      message: `'${providerId}' has no models yet. Choose "Reload all models" first.`,
       variant: "warning",
     })
     return
   }
   for (;;) {
     const picked = await ctx.ui.dialog.select({
-      title: `Which model of ${providerId}?`,
+      title: `Edit ${providerId} > Model settings: which model?`,
       options: [
         ...models.map(model => ({
-          title: model.name === model.id ? model.id : `${model.name} (${model.id})`,
+          title: model.name,
           value: model.id,
-          description: `${model.reasoningLabel}; images ${model.image ? "yes" : "no"}; context ${model.context ?? "unset"}; longest reply ${model.output ?? "unset"}`,
+          description: `Thinking: ${model.reasoningLabel}${model.image ? ", reads images" : ""}`,
         })),
-        { title: "Done", value: "", description: "Go back" },
+        { title: "Done", value: "", description: "Go back to the menu" },
       ],
     })
     if (picked === "") return
@@ -243,23 +254,44 @@ async function wizardEditModels(ctx: V2TuiContext, providerId: string): Promise<
       return
     }
     const model = models.find(item => item.id === picked)
-    if (model) await editOneModel(ctx, providerId, model)
+    if (model?.endpointDiffers) {
+      const choice = await ctx.ui.dialog.select({
+        title: `Edit ${providerId} > ${model.id}`,
+        options: [
+          { title: "Use the endpoint's values", value: "endpoint", description: "Take the context and reply limits the provider reports" },
+          { title: "Change its settings", value: "edit", description: "Set thinking level, images and limits by hand" },
+        ],
+      })
+      if (choice === undefined) {
+        cancelled(ctx)
+        return
+      }
+      if (choice === "endpoint") {
+        const { status, message } = await call<{ status: string; message: string }>(ctx, "useEndpointValues", { providerId, modelId: model.id })
+        if (status === "ok") done(ctx, `Updated ${model.id} from the endpoint`)
+        else fail(ctx, message)
+      } else {
+        await editOneModel(ctx, providerId, model)
+      }
+    } else if (model) {
+      await editOneModel(ctx, providerId, model)
+    }
     const again = await call<{ models?: ModelRow[] }>(ctx, "listModels", { providerId })
     models.splice(0, models.length, ...(again?.models ?? []))
   }
 }
 
-async function pickProvider(ctx: V2TuiContext): Promise<ProviderRow | undefined> {
+async function pickProvider(ctx: V2TuiContext, where: string): Promise<ProviderRow | undefined> {
   const { providers } = await call<{ providers: ProviderRow[] }>(ctx, "list")
   if (providers.length === 0) {
     ctx.ui.toast.show({
-      message: "You have no custom providers yet. Run /custom-providers to add your first one.",
+      message: "You have no providers yet. Choose 'Add a provider' first.",
       variant: "warning",
     })
     return undefined
   }
   const selected = await ctx.ui.dialog.select({
-    title: "Which provider?",
+    title: `${where} > Pick a provider`,
     options: providers.map(provider => ({
       title: provider.id,
       value: provider.id,
@@ -274,9 +306,8 @@ async function askApiKey(ctx: V2TuiContext, title: string): Promise<string | und
   return ctx.ui.dialog.prompt({
     title,
     description:
-      "Paste the key you got from your provider (it often starts with sk-). Most providers need one. " +
-      "It is saved in opencode's secure key store, never shown again, and you can replace it any time with /custom-providers, then 'Edit a provider'. " +
-      "Leave empty only for local servers like Ollama. Press Esc to cancel: nothing is saved until the last step.",
+      "Paste the key from your provider's site (often starts with sk-). Saved securely. " +
+      "Leave empty only for local servers like Ollama.",
   })
 }
 async function promptManualAdd(
@@ -286,8 +317,8 @@ async function promptManualAdd(
 ): Promise<void> {
   for (;;) {
     const modelIds = await ctx.ui.dialog.prompt({
-      title: "Add models manually",
-      description: "Enter one or more model ids separated by commas. Find these ids on your provider's setup page.",
+      title: "Add a provider > Type the model ids",
+      description: "Model ids, separated by commas. Example: gpt-4o, gpt-4o-mini",
       placeholder: "model-a, model-b",
     })
     if (modelIds === undefined) {
@@ -303,9 +334,9 @@ async function promptManualAdd(
     // wording sent the user back to retype ids that were never the problem.
     if (manual.status === "confirm_replace") {
       const confirmed = await ctx.ui.dialog.confirm({
-        title: `${providerId} already exists`,
+        title: `Add a provider > ${providerId} already exists`,
         message: manual.message + "\n\nReplace it?",
-        label: { confirm: "Replace it", cancel: "Keep what I have" },
+        label: { confirm: "Replace it", cancel: "Keep it" },
       })
       if (!confirmed) {
         cancelled(ctx)
@@ -315,7 +346,7 @@ async function promptManualAdd(
       await ctx.ui.dialog.alert({ title: `Add provider: ${providerId}`, message: replaced.message })
       return
     }
-    await ctx.ui.dialog.alert({ title: "Check the model ids", message: manual.message })
+    await ctx.ui.dialog.alert({ title: "Add a provider > Check the model ids", message: manual.message })
   }
 }
 
@@ -333,6 +364,20 @@ function repairBaseURL(raw: string): string | undefined {
   return undefined
 }
 
+// One entry point for adding: ask where the provider comes from, then run that wizard.
+async function wizardAddSource(ctx: V2TuiContext): Promise<void> {
+  const source = await ctx.ui.dialog.select({
+    title: "Add a provider > Where is it from?",
+    options: [
+      { title: "My own API", value: "own", description: "You type its address and key." },
+      { title: "Built-in list", value: "catalog", description: "Pick from a ready-made list." },
+    ],
+  })
+  if (source === "catalog") await wizardCatalogAdd(ctx)
+  else if (source === "own") await wizardAdd(ctx)
+  else cancelled(ctx)
+}
+
 async function wizardAdd(ctx: V2TuiContext): Promise<void> {
   // Esc inside a step goes back one step, so a mistake at step 4 does not cost the user
   // steps 1 to 3. Only Esc at step 1 leaves the wizard and reports the cancellation.
@@ -344,9 +389,8 @@ async function wizardAdd(ctx: V2TuiContext): Promise<void> {
   for (let step = 1; step <= 5; ) {
     if (step === 1) {
       const answer = await ctx.ui.dialog.prompt({
-        title: "Step 1 of 5: Name for this provider",
-        description:
-          "Any short name you will recognise later. Letters, numbers, hyphens and underscores only. Example: my-proxy",
+        title: "Add a provider > Step 1 of 5: Name",
+        description: "A short name you will recognise later. Letters, numbers, - and _ only. Example: my-proxy",
         placeholder: "my-proxy",
         value: providerId || undefined,
       })
@@ -367,9 +411,9 @@ async function wizardAdd(ctx: V2TuiContext): Promise<void> {
       const clash = collisionSuggestion(trimmed)
       if (clash) {
         const use = await ctx.ui.dialog.confirm({
-          title: "That name is already used by a built-in provider",
-          message: `'${trimmed}' belongs to an opencode built-in provider. Using it may change your existing ${trimmed} setup.\n\nUse '${clash}' instead?`,
-          label: { confirm: `Use ${clash}`, cancel: "Go back" },
+          title: "Add a provider > Step 1 of 5: Name taken",
+          message: `'${trimmed}' is already used by OpenCode. Use '${clash}' instead?`,
+          label: { confirm: `Use ${clash}`, cancel: "Type another" },
         })
         // "Go back" means the name step, not the whole wizard.
         if (!use) continue
@@ -381,9 +425,9 @@ async function wizardAdd(ctx: V2TuiContext): Promise<void> {
       const existing = await call<{ providers: Array<{ id: string }> }>(ctx, "list").catch(() => undefined)
       if (existing?.providers?.some(entry => entry.id === providerId)) {
         const replace = await ctx.ui.dialog.confirm({
-          title: "You already have a provider with this name",
-          message: `Adding '${providerId}' again replaces the one you have now, including its model list.\n\nReplace it?`,
-          label: { confirm: "Replace it", cancel: "Go back" },
+          title: "Add a provider > Step 1 of 5: Name already used",
+          message: `You already have a provider named '${providerId}'. Replace it? Its models will be replaced too.`,
+          label: { confirm: "Replace it", cancel: "Type another" },
         })
         if (!replace) continue
       }
@@ -393,10 +437,9 @@ async function wizardAdd(ctx: V2TuiContext): Promise<void> {
 
     if (step === 2) {
       const answer = await ctx.ui.dialog.prompt({
-        title: "Step 2 of 5: Base URL",
+        title: "Add a provider > Step 2 of 5: Base URL",
         description:
-          "Paste your provider's API address: it is on their setup page, labelled \"Base URL\" or \"API endpoint\". " +
-          "It looks like https://api.example.com/v1. A local server like Ollama uses http://localhost:11434/v1.",
+          "Copy the Base URL from your provider's setup page. Example: https://api.example.com/v1",
         placeholder: "https://api.example.com/v1",
         value: baseURL || undefined,
       })
@@ -408,9 +451,9 @@ async function wizardAdd(ctx: V2TuiContext): Promise<void> {
       const repaired = repairBaseURL(candidate)
       if (repaired) {
         const use = await ctx.ui.dialog.confirm({
-          title: "Did you mean this address?",
+          title: "Add a provider > Step 2 of 5: Did you mean this?",
           message: `'${candidate}' is missing the start of the address.\n\nUse '${repaired}' instead?`,
-          label: { confirm: "Use this address", cancel: "Type it again" },
+          label: { confirm: "Use it", cancel: "Type it again" },
         })
         // "Type it again" re-asks this same step.
         if (!use) continue
@@ -418,9 +461,9 @@ async function wizardAdd(ctx: V2TuiContext): Promise<void> {
       }
       if (!isValidUrl(candidate)) {
         await ctx.ui.dialog.alert({
-          title: "That address could not be read",
+          title: "Add a provider > Step 2 of 5: Address not valid",
           message:
-            "It must start with https:// (or http:// for a local server) and look like https://api.example.com/v1.\n\nNothing was saved: please try again.",
+            "It must start with https:// (or http:// for a local server), like https://api.example.com/v1. Nothing was saved. Try again.",
         })
         continue
       }
@@ -431,8 +474,8 @@ async function wizardAdd(ctx: V2TuiContext): Promise<void> {
 
     if (step === 3) {
       const answer = await ctx.ui.dialog.select({
-        title: "Step 3 of 5: API type",
-        placeholder: "Pick the first one if you are unsure",
+        title: "Add a provider > Step 3 of 5: API type",
+        placeholder: "Not sure? Pick the first one.",
         options: FLAVOR_OPTIONS,
       })
       if (!answer) {
@@ -445,7 +488,7 @@ async function wizardAdd(ctx: V2TuiContext): Promise<void> {
     }
 
     if (step === 4) {
-      const answer = await askApiKey(ctx, "Step 4 of 5: API key")
+      const answer = await askApiKey(ctx, "Add a provider > Step 4 of 5: API key")
       if (answer === undefined) {
         step = 3
         continue
@@ -456,7 +499,7 @@ async function wizardAdd(ctx: V2TuiContext): Promise<void> {
     }
 
     const answer = await ctx.ui.dialog.select({
-      title: "Step 5 of 5: How should models appear in the model list?",
+      title: "Add a provider > Step 5 of 5: Model names",
       options: SIMPLE_OPTIONS,
     })
     if (!answer) {
@@ -477,15 +520,16 @@ async function wizardAdd(ctx: V2TuiContext): Promise<void> {
 
   if (flavor === "anthropic") {
     await ctx.ui.dialog.alert({
-      title: "Anthropic needs model names",
+      title: "Add a provider > Type the model ids",
       message:
-        "Anthropic APIs cannot list their models here. Type the model names you use and they will be added with metadata from the public model database.",
+        "Anthropic cannot list its models here. Type the model names you use, and their details are filled in automatically.",
     })
     await promptManualAdd(ctx, input, providerId)
     return
   }
 
   type ExtendedAddResult = AddProviderResult | { status: "confirm_endpoint_reuse"; usedBy: string[]; message: string; detail?: string }
+  ctx.ui.toast.show({ title: "Custom providers", message: "Checking models, this can take a few seconds...", variant: "info" })
   let result = await call<ExtendedAddResult>(ctx, "add", input)
   while (result.status !== "ok") {
     if (result.status === "invalid") {
@@ -494,11 +538,11 @@ async function wizardAdd(ctx: V2TuiContext): Promise<void> {
     }
     if (result.status === "confirm_replace") {
       const confirmed = await ctx.ui.dialog.confirm({
-        title: `${providerId} already exists`,
+        title: `Add a provider > ${providerId} already exists`,
         message:
-          `You already have a provider named '${providerId}'. Adding this one would replace its settings and its model list.\n\n` +
+          `You already have a provider named '${providerId}'. Adding this one replaces its settings and models.\n\n` +
           "Replace it?",
-        label: { confirm: "Replace it", cancel: "Keep what I have" },
+        label: { confirm: "Replace it", cancel: "Keep it" },
       })
       if (confirmed) {
         result = await call<ExtendedAddResult>(ctx, "add", { ...input, confirmReplace: true })
@@ -509,10 +553,10 @@ async function wizardAdd(ctx: V2TuiContext): Promise<void> {
     }
     if (result.status === "confirm_endpoint_reuse") {
       const confirmed = await ctx.ui.dialog.confirm({
-        title: "That address is already in use",
+        title: "Add a provider > Address already used",
         message: `This address is already used by: ${result.usedBy.join(", ")}.
 
-Add another provider on the same address?`,
+Add this one anyway?`,
         label: { confirm: "Add it anyway", cancel: "Cancel" },
       })
       if (confirmed) {
@@ -523,11 +567,11 @@ Add another provider on the same address?`,
       return
     }
     const action = await ctx.ui.dialog.select({
-      title: "Could not get the provider's model list",
+      title: "Add a provider > Could not load its models",
       placeholder: result.message,
       options: [
-        { title: "Try again", value: "retry", description: "Check the address and key, then try the model list again." },
-        { title: "Add models manually", value: "manual", description: "Type the model ids from your provider's setup page." },
+        { title: "Try again", value: "retry", description: "Check the address and key first." },
+        { title: "Type the model ids", value: "manual", description: "Add the model names yourself." },
         { title: "Cancel", value: "cancel", description: "Nothing will be saved." },
       ],
     })
@@ -559,8 +603,8 @@ async function wizardCatalogAdd(ctx: V2TuiContext): Promise<void> {
   for (let step = 1; step <= 4; ) {
     if (step === 1) {
       const answer = await ctx.ui.dialog.select({
-        title: "Pick a provider from the catalog",
-        placeholder: "You still need that provider's API key",
+        title: "Add from built-in list > Step 1 of 4: Pick one",
+        placeholder: "You will need that provider's API key.",
         options: sites.map(entry => ({
           title: entry.name,
           value: entry.id,
@@ -577,8 +621,8 @@ async function wizardCatalogAdd(ctx: V2TuiContext): Promise<void> {
     }
     if (step === 2) {
       const answer = await ctx.ui.dialog.prompt({
-        title: "Name for this provider",
-        description: "Any short name you will recognise later. Letters, numbers, hyphens and underscores only.",
+        title: "Add from built-in list > Step 2 of 4: Name",
+        description: "A short name you will recognise. Letters, numbers, - and _ only.",
         placeholder: site,
         value: providerId || site,
       })
@@ -592,10 +636,9 @@ async function wizardCatalogAdd(ctx: V2TuiContext): Promise<void> {
     }
     if (step === 3) {
       const answer = await ctx.ui.dialog.prompt({
-        title: "Which models? (optional)",
+        title: "Add from built-in list > Step 3 of 4: Which models?",
         description:
-          "Type model names separated by commas, for example claude-sonnet-4-5, gpt-4o. " +
-          "Leave empty to add every model this provider offers: that is the safe choice.",
+          "Type names separated by commas, e.g. gpt-4o, gpt-4o-mini. Leave empty to add all of them.",
         value: models,
       })
       if (answer === undefined) {
@@ -606,7 +649,7 @@ async function wizardCatalogAdd(ctx: V2TuiContext): Promise<void> {
       step = 4
       continue
     }
-    const answer = await askApiKey(ctx, "API key for this provider (paste it if you have one)")
+    const answer = await askApiKey(ctx, "Add from built-in list > Step 4 of 4: API key")
     if (answer === undefined) {
       step = 3
       continue
@@ -620,111 +663,30 @@ async function wizardCatalogAdd(ctx: V2TuiContext): Promise<void> {
     models: models || undefined,
     apiKey: apiKey || undefined,
   })
-  await ctx.ui.dialog.alert({ title: `Add from catalog: ${providerId}`, message })
-}
-
-async function wizardReprobe(ctx: V2TuiContext): Promise<void> {
-  const provider = await pickProvider(ctx)
-  if (!provider) return
-  const { message } = await call<{ message: string }>(ctx, "reprobe", { providerId: provider.id })
-  await ctx.ui.dialog.alert({ title: `Check for new models: ${provider.id}`, message })
-}
-
-async function wizardApplyReconcile(ctx: V2TuiContext): Promise<void> {
-  const provider = await pickProvider(ctx)
-  if (!provider) return
-  // `changes` is the structured per-model diff; it is only present when the probe
-  // succeeded, so its absence (or emptiness) means there is nothing to review.
-  // ReprobeResult keeps `kind` as the union instead of widening it to string, which is what
-  // makes the kind-aware wording below type-safe.
-  const probe = await call<ReprobeResult>(ctx, "reprobe", { providerId: provider.id })
-  const { message } = probe
-  // A non-array would make `changes.length > 0` true for a string and iterate its
-  // characters, producing decisions keyed "undefined".
-  const changes = Array.isArray(probe.changes) ? probe.changes : []
-  // Show what was found first: the select dialog cannot be trusted to display a long placeholder.
-  await ctx.ui.dialog.alert({ title: `What was found for ${provider.id}`, message })
-  // Review first, then the all-or-nothing pair, and keep before apply. The plan in
-  // docs/ux-analysis/final-plan.md asks for exactly this: the safest option should be the
-  // one under the cursor, not the one that rewrites everything.
-  const options = [
-    {
-      title: "Review one by one",
-      value: "review",
-      description: "Decide each change on its own instead of taking all or none.",
-    },
-  ]
-  if (changes.length === 0) options.pop()
-  options.push({ title: "Keep what I have", value: "keep", description: "Change nothing" })
-  options.push({
-    title: "Apply everything",
-    value: "apply",
-    description: "Add the new models. Models that disappeared stay in your list.",
-  })
-  const choice = await ctx.ui.dialog.select({ title: "Apply these changes?", options })
-  if (!choice) {
-    cancelled(ctx)
-    return
-  }
-  if (choice === "review") {
-    // The comment this replaces claimed an Esc keeps the unrecorded models via absent-key
-    // semantics. That reasoning is unreachable: the guard below returns before any apply
-    // call, so no partial decision set is ever sent. Stated plainly so nobody later treats
-    // it as a safety proof when changing the loop to send partial decisions.
-    const decisions: Record<string, "apply" | "keep"> = {}
-    for (const change of changes) {
-      // A vanished model is deleted when the decision is anything but "keep", so the row
-      // has to say that. Labelling it "Take the new values" invited the user to delete a
-      // model while believing they were accepting an update.
-      const vanishing = change.kind === "removed"
-      const decision = await ctx.ui.dialog.select({
-        title: sanitizeDialogText(`${change.id} (${change.kind})`),
-        options: vanishing
-          ? [
-              { title: "Keep this model", value: "keep", description: "Leave it in your list as it is now." },
-              { title: "Remove this model", value: "apply", description: sanitizeDialogText(`Delete it: ${change.detail}`) },
-            ]
-          : [
-              { title: "Apply this change", value: "apply", description: sanitizeDialogText(`Take the new values: ${change.detail}`) },
-              { title: "Keep what I have", value: "keep", description: "Leave this model exactly as it is now." },
-            ],
-      })
-      if (decision !== "apply" && decision !== "keep") {
-        cancelled(ctx)
-        return
-      }
-      decisions[change.id] = decision
-    }
-    const applied = await call<{ message: string }>(ctx, "apply", {
-      providerId: provider.id,
-      decisions: JSON.stringify(decisions),
-    })
-    await ctx.ui.dialog.alert({ title: `Update ${provider.id}`, message: applied.message })
-    return
-  }
-  const applied = await call<{ message: string }>(ctx, "apply", { providerId: provider.id, mode: choice })
-  await ctx.ui.dialog.alert({ title: `Update ${provider.id}`, message: applied.message })
+  await ctx.ui.dialog.alert({ title: `Add from built-in list > ${providerId}`, message })
 }
 
 // Esc at the menu is the only way out: an Esc or an empty value in an inner dialog
 // returns to this loop, so the user can make several changes in one visit instead of
 // restarting the wizard after every field.
 async function wizardEdit(ctx: V2TuiContext): Promise<void> {
-  const provider = await pickProvider(ctx)
+  const provider = await pickProvider(ctx, "Edit a provider")
   if (!provider) return
   for (;;) {
     const flavorLabel = FLAVORS[provider.flavor as keyof typeof FLAVORS]?.label ?? provider.flavor
     const styleLabel = provider.displayStyle === "name" ? "Friendly name" : "Model id"
     const field = await ctx.ui.dialog.select({
-      title: `What do you want to change for ${provider.id}?`,
+      title: `Edit ${provider.id} > What to change`,
+      placeholder: "Pick one. Esc when you are done.",
       options: [
-        { title: "Base URL", value: "baseURL", description: `Currently: ${provider.baseURL}` },
-        { title: "API type", value: "flavor", description: `Currently: ${flavorLabel}` },
-        { title: "How models are listed", value: "displayStyle", description: `Currently: ${styleLabel}` },
+        { title: "Base URL", value: "baseURL", description: `Now: ${provider.baseURL}` },
         { title: "API key", value: "apiKey", description: "Replace the saved key" },
-        { title: "A model's settings", value: "model", description: "Change thinking, image input, or token limits" },
-        { title: "Delete models", value: "deleteModels", description: "Remove several models from this provider at once" },
-        { title: "Rename provider", value: "rename", description: `Currently: ${provider.id}` },
+        { title: "API type", value: "flavor", description: `Now: ${flavorLabel}` },
+        { title: "Model names", value: "displayStyle", description: `Now: ${styleLabel}` },
+        { title: "Add models manually", value: "addManual", description: "Type model names yourself" },
+        { title: "Delete models", value: "deleteModels", description: "Remove models from this provider" },
+        { title: "Model settings", value: "model", description: "Thinking level, image support, length limits" },
+        { title: "Rename", value: "rename", description: `Now: ${provider.id}` },
       ],
     })
     if (!field) {
@@ -739,24 +701,44 @@ async function wizardEdit(ctx: V2TuiContext): Promise<void> {
       await wizardDeleteModels(ctx, provider.id)
       continue
     }
+    if (field === "addManual") {
+      await wizardAddManualModels(ctx, provider.id)
+      continue
+    }
+    if (field === "apiKey") {
+      const typed = await ctx.ui.dialog.prompt({
+        title: `Edit ${provider.id} > New API key`,
+        description: "Paste the new key. Leave empty to clear the saved key.",
+      })
+      if (typed === undefined) continue
+      if (typed === "") {
+        const confirmed = await ctx.ui.dialog.confirm({
+          title: "Clear the API key",
+          message: `Remove the saved API key for ${provider.id}? The provider will be called without a key.`,
+          label: { confirm: "Clear it", cancel: "Keep it" },
+        })
+        if (!confirmed) continue
+        const { message } = await call<{ message: string }>(ctx, "clearKey", { providerId: provider.id })
+        done(ctx, message)
+        continue
+      }
+      const { message } = await call<{ message: string }>(ctx, "edit", { providerId: provider.id, apiKey: typed })
+      await ctx.ui.dialog.alert({ title: `Edit ${provider.id} > Saved`, message })
+      continue
+    }
     if (field === "rename") {
       await wizardRename(ctx, provider)
       continue
     }
     let value: string | undefined
     if (field === "flavor") {
-      value = await ctx.ui.dialog.select({ title: "API type", options: FLAVOR_OPTIONS })
+      value = await ctx.ui.dialog.select({ title: `Edit ${provider.id} > API type`, options: FLAVOR_OPTIONS })
     } else if (field === "displayStyle") {
-      value = await ctx.ui.dialog.select({ title: "How should models appear in the model list?", options: SIMPLE_OPTIONS })
-    } else if (field === "apiKey") {
-      value = await ctx.ui.dialog.prompt({
-        title: "New API key",
-        description: "Paste the new key. Press Esc to keep the current one. Leave it empty and the current key is kept. It is saved securely and can be replaced again later.",
-      })
+      value = await ctx.ui.dialog.select({ title: `Edit ${provider.id} > Model names`, options: SIMPLE_OPTIONS })
     } else {
       value = await ctx.ui.dialog.prompt({
-        title: "New Base URL",
-        description: "Must start with https:// (or http:// for a local server) and usually ends in /v1",
+        title: `Edit ${provider.id} > New Base URL`,
+        description: "Starts with https://. Often ends in /v1. Leave empty to keep it.",
         value: provider.baseURL,
       })
     }
@@ -767,46 +749,58 @@ async function wizardEdit(ctx: V2TuiContext): Promise<void> {
       providerId: provider.id,
       [field]: value,
     })
-    await ctx.ui.dialog.alert({ title: `Edit ${provider.id}`, message })
+    await ctx.ui.dialog.alert({ title: `Edit ${provider.id} > Saved`, message })
   }
 }
 
-// Backs out silently on Esc: a nested dialog returns to the edit wizard's menu.
+// One text prompt for comma-separated ids, appended to the provider. Ids already present are
+// skipped by the server, so retyping an existing model is harmless. Esc leaves quietly.
+async function wizardAddManualModels(ctx: V2TuiContext, providerId: string): Promise<void> {
+  const modelIds = await ctx.ui.dialog.prompt({
+    title: `Edit ${providerId} > Add models manually`,
+    description: "Model ids, separated by commas. Example: gpt-4o, gpt-4o-mini",
+    placeholder: "model-a, model-b",
+  })
+  if (modelIds === undefined || modelIds.trim() === "") return
+  const { status, message } = await call<{ status: string; message: string }>(ctx, "addModelIds", { providerId, modelIds })
+  if (status === "ok") done(ctx, message)
+  else fail(ctx, message)
+}
+
+// Pick one model at a time from a list. Each pick asks to confirm, then the list comes back
+// without the deleted model, so several can be removed in one visit. Esc or "Done" leaves.
 async function wizardDeleteModels(ctx: V2TuiContext, providerId: string): Promise<void> {
   for (;;) {
-    const raw = await ctx.ui.dialog.prompt({
-      title: `Delete models from ${providerId}`,
-      description:
-        "Type one or more model ids separated by commas. Every id has to exist or nothing is deleted. Run /list-models to see the ids.",
-      placeholder: "model-a, model-b",
-    })
-    if (raw === undefined || raw.trim() === "") return
-    const ids = raw
-      .split(",")
-      .map(modelId => modelId.trim())
-      .filter(modelId => modelId.length > 0)
-    if (ids.length === 0) {
-      ctx.ui.toast.show({ message: "Type at least one model id, separated by commas.", variant: "warning" })
-      continue
-    }
-    const confirmed = await ctx.ui.dialog.confirm({
-      title: "Delete these models?",
-      message: `Delete ${ids.length} model${ids.length === 1 ? "" : "s"} from '${providerId}'?\n\n${ids.join(", ")}\n\nThis cannot be undone. The provider keeps its other models, its address and its key.`,
-      label: { confirm: "Delete them", cancel: "Keep them" },
-    })
-    if (!confirmed) return
-    const { status, message } = await call<{ status: string; message: string; deleted: number }>(ctx, "deleteModels", { providerId, modelIds: raw })
-    // A refusal carries its reason in the message, so an id that does not exist comes
-    // back here for another try instead of ending the wizard.
-    if (status === "ok") {
-      done(ctx, message)
+    const { models } = await call<{ models: ModelRow[] }>(ctx, "listModels", { providerId })
+    if (models.length === 0) {
+      ctx.ui.toast.show({ message: `'${providerId}' has no models left.`, variant: "info" })
       return
     }
+    const picked = await ctx.ui.dialog.select({
+      title: `Edit ${providerId} > Delete models`,
+      placeholder: "Pick one model. Choose Done when you are finished.",
+      options: [
+        ...models.map(model => ({ title: model.name, value: model.id, description: model.id })),
+        { title: "Done", value: "", description: "Go back to the menu" },
+      ],
+    })
+    if (!picked) return
+    const confirmed = await ctx.ui.dialog.confirm({
+      title: `Edit ${providerId} > Delete ${picked}?`,
+      message: `'${picked}' is removed from '${providerId}'. This cannot be undone.`,
+      label: { confirm: "Delete it", cancel: "Keep it" },
+    })
+    if (!confirmed) continue
+    const { status, message } = await call<{ status: string; message: string; deleted: number }>(ctx, "deleteModels", { providerId, modelIds: picked })
     if (status === "unknown_provider") {
       fail(ctx, message)
       return
     }
-    await ctx.ui.dialog.alert({ title: `Delete models from ${providerId}`, message })
+    if (status === "ok") {
+      done(ctx, `Deleted '${picked}'.`)
+      continue
+    }
+    await ctx.ui.dialog.alert({ title: `Edit ${providerId} > Delete models`, message })
   }
 }
 
@@ -814,9 +808,8 @@ async function wizardDeleteModels(ctx: V2TuiContext, providerId: string): Promis
 // new name for the rest of the visit.
 async function wizardRename(ctx: V2TuiContext, provider: ProviderRow): Promise<void> {
   const raw = await ctx.ui.dialog.prompt({
-    title: `Rename ${provider.id}`,
-    description:
-      "A new short name for this provider. Letters, numbers, hyphens and underscores only. Its models, address and key stay as they are.",
+    title: `Edit ${provider.id} > Rename`,
+    description: "A new short name. Letters, numbers, - and _ only. Models and address stay as they are.",
     placeholder: "my-proxy",
   })
   if (raw === undefined || raw.trim() === "") return
@@ -830,9 +823,9 @@ async function wizardRename(ctx: V2TuiContext, provider: ProviderRow): Promise<v
     return
   }
   const confirmed = await ctx.ui.dialog.confirm({
-    title: "Rename this provider?",
-    message: `Rename '${provider.id}' to '${newId}'?\n\nIts models, address and key are kept. An API key saved under '${provider.id}' stays stored under that name.`,
-    label: { confirm: "Rename it", cancel: "Keep the current name" },
+    title: `Edit ${provider.id} > Rename to ${newId}?`,
+    message: `Rename '${provider.id}' to '${newId}'? You will need to enter the API key again.`,
+    label: { confirm: "Rename it", cancel: "Keep the name" },
   })
   if (!confirmed) return
   const { status, message } = await call<{ status: string; message: string }>(ctx, "renameProvider", { providerId: provider.id, newId })
@@ -845,26 +838,26 @@ async function wizardRename(ctx: V2TuiContext, provider: ProviderRow): Promise<v
 }
 
 async function wizardDelete(ctx: V2TuiContext): Promise<void> {
-  const provider = await pickProvider(ctx)
+  const provider = await pickProvider(ctx, "Delete a provider")
   if (!provider) return
   const confirmed = await ctx.ui.dialog.confirm({
-    title: "Remove this provider?",
-    message: `Remove '${provider.id}' and its ${provider.models} model(s)?\n\nThis cannot be undone. Your other opencode settings are not touched. You can add it again later from /custom-providers.`,
-    label: { confirm: "Remove it", cancel: "Keep it" },
+    title: `Delete a provider > Delete ${provider.id}?`,
+    message: `'${provider.id}' and its ${provider.models} model(s) are removed. This cannot be undone.`,
+    label: { confirm: "Delete it", cancel: "Keep it" },
   })
   if (!confirmed) {
     cancelled(ctx)
     return
   }
-  const { message } = await call<{ message: string }>(ctx, "remove", { providerId: provider.id })
-  // remove reports a failure in its message rather than by throwing, so a missing
-  // provider would otherwise be announced with a success toast. The provider list was
-  // just read, so this only happens when it changed underneath us.
-  if (/^There is no provider named/.test(message)) fail(ctx, message)
-  else done(ctx, message)
+  const { status, message } = await call<{ status: string; message: string }>(ctx, "remove", { providerId: provider.id })
+  // remove reports a failure in its message rather than by throwing, so check the status
+  // field: a missing provider or one that comes from the opencode config is not a success.
+  if (status === "ok") done(ctx, message)
+  else fail(ctx, message)
 }
 
 async function wizardRefresh(ctx: V2TuiContext): Promise<void> {
+  ctx.ui.toast.show({ title: "Custom providers", message: "Checking models, this can take a few seconds...", variant: "info" })
   const { message } = await call<{ message: string }>(ctx, "refresh")
   done(ctx, message)
 }
@@ -875,12 +868,12 @@ async function wizardList(ctx: V2TuiContext): Promise<void> {
     ? providers
         .map(provider =>
           provider.models === 0
-            ? `${provider.id}: NOT READY (no models yet)\n  ${provider.baseURL}\n  Fix it with /custom-providers: "Edit a provider" to check the URL and API key, then "Reload all models"`
+            ? `${provider.id}: no models yet\n  ${provider.baseURL}\n  Choose "Reload all models" to fetch them.`
             : `${provider.id}: ${provider.models} model(s) ready${statusSuffix(provider)}\n  ${provider.baseURL}`,
         )
         .join("\n\n")
-    : "You have no custom providers yet. Run /custom-providers to add your first one."
-  await ctx.ui.dialog.alert({ title: "Your custom providers", message })
+    : "You have no providers yet. Choose 'Add a provider' to start."
+  await ctx.ui.dialog.alert({ title: "List my providers", message })
 }
 
 async function wizardHub(ctx: V2TuiContext): Promise<void> {
@@ -894,16 +887,13 @@ async function wizardHub(ctx: V2TuiContext): Promise<void> {
   for (;;) {
     const action = await ctx.ui.dialog.select({
       title: "Custom providers",
-      placeholder: "Pick what you want to do",
+      placeholder: "Pick one. Esc to close.",
       options: [
-        { title: "List my providers", value: "list", description: "Show every custom provider and its models" },
-        { title: "Add a provider", value: "add", description: "Set up a new API provider step by step" },
-        { title: "Add a known provider", value: "catalog", description: "Pick a provider from the built-in list" },
-        { title: "Edit a provider", value: "edit", description: "Change its address, API type, key, or how models are named" },
+        { title: "List my providers", value: "list", description: "See what you have set up" },
+        { title: "Add a provider", value: "add", description: "Your own API, or a ready-made one" },
+        { title: "Edit a provider", value: "edit", description: "Change the address, key, or models" },
         { title: "Delete a provider", value: "delete", description: "Remove a provider and its models" },
-        { title: "Check for new models", value: "reprobe", description: "Ask your provider whether it has new models" },
-        { title: "Review model changes", value: "review", description: "See what changed and choose what to keep" },
-        { title: "Reload all models", value: "reload", description: "Refresh every provider from its own address" },
+        { title: "Reload all models", value: "reload", description: "Fetch the latest model list for every provider" },
       ],
     })
     if (!action) {
@@ -912,12 +902,9 @@ async function wizardHub(ctx: V2TuiContext): Promise<void> {
     }
     ran = true
     if (action === "list") await wizardList(ctx)
-    else if (action === "add") await wizardAdd(ctx)
-    else if (action === "catalog") await wizardCatalogAdd(ctx)
+    else if (action === "add") await wizardAddSource(ctx)
     else if (action === "edit") await wizardEdit(ctx)
     else if (action === "delete") await wizardDelete(ctx)
-    else if (action === "reprobe") await wizardReprobe(ctx)
-    else if (action === "review") await wizardApplyReconcile(ctx)
     else await wizardRefresh(ctx)
   }
 }
@@ -949,9 +936,8 @@ export const setup = (ctx: V2TuiContext): void => {
           await ctx.ui.dialog.alert({
             title: "Something went wrong",
             message:
-              "The action did not finish and nothing was changed.\n" +
-              "Run /custom-providers and choose 'List my providers' to see the current state, then try again.\n\n" +
-              `Technical detail (for bug reports): ${error instanceof Error ? error.message : String(error)}`,
+              "Nothing was changed. Try again, or choose 'List my providers' to check.\n\n" +
+              `Details: ${errorText(error)}`,
           })
         }
       },

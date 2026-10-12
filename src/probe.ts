@@ -337,7 +337,9 @@ export async function probeEndpointOutcome(
   if (FLAVORS[flavor].listShape === "none") {
     return { models: [], baseURL, listUnsupported: true }
   }
-  const lookup = await getLookupMap()
+  // Lookup (models.dev) runs alongside the first network call instead of before it.
+  const lookupPromise = getLookupMap()
+  lookupPromise.catch(() => undefined)
   const customs = loadCustomRules()
   const candidates = buildCandidateUrls(baseURL)
   let lastError: string | null = null
@@ -345,6 +347,7 @@ export async function probeEndpointOutcome(
     try {
       const items = await fetchFlavorModels(candidate, apiKey, flavor)
       if (items.length > 0) {
+        const lookup = await lookupPromise
         let origin = ""
         try {
           origin = new URL(candidate).origin

@@ -1,4 +1,5 @@
-import { discoverAndEnrich, clearModelsDevCache, type DisplayStyle } from "./discovery.js"
+import { discoverAndEnrich, type DisplayStyle } from "./discovery.js"
+import { resetModelsDevLookup } from "./catalog.js"
 import { isValidUrl, sanitizeErrorMessage } from "./security.js"
 import { normalizeBaseUrl } from "./endpoint.js"
 import { getApiKey, shouldDiscover, type ProviderConfig } from "./types.js"
@@ -81,11 +82,12 @@ export async function reloadAllProviders(
 
   if (dynamicProviders.length === 0) return result
 
-  clearModelsDevCache()
+  // Drops only the in-memory metadata lookup so it reflects the disk cache (6h TTL).
+  // The disk cache file is kept, so the large models.dev catalog is not refetched.
+  resetModelsDevLookup()
 
   const outcomes = await chunkedAllSettled(
     dynamicProviders.map(([id, cfg]) => () => reloadOneProvider(id, cfg)),
-    4,
   )
 
   for (const outcome of outcomes) {
@@ -106,6 +108,11 @@ export async function reloadAllProviders(
 
     if (models) {
       const providerConfig = providers[providerId]
+      const previousIds = Object.keys(providerConfig.models ?? {})
+      const vanished = previousIds.filter(id => !(id in models))
+      if (vanished.length > 0) {
+        result.warnings.push(`${providerId} no longer lists: ${vanished.join(", ")}. These were removed.`)
+      }
       providerConfig.models = models
       result.totalModels += Object.keys(models).length
     }
@@ -294,6 +301,16 @@ export function applyReconcile(
   const displayStyle: DisplayStyle = provider.displayStyle ?? "slug"
   const current = (provider.models ?? {}) as unknown as Record<string, EnrichedModel>
   return applyDecisions(current, fresh, decisions, displayStyle)
+}
+
+/** Re-probe, then reconcile the stored models with `decisions`. Throws if the probe fails. */
+export async function reprobeAndReconcile(
+  providerId: string,
+  provider: ProviderConfig,
+  decisions: Record<string, TriDecision>,
+): Promise<{ rep: ReprobeResult; models: Record<string, EnrichedModel> }> {
+  const rep = await reprobeProvider(providerId, provider)
+  return { rep, models: applyReconcile(provider, rep.fresh, decisions) }
 }
 
 export function renameProviderEntry(

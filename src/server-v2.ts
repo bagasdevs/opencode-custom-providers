@@ -4,6 +4,7 @@ import { normalizeBaseUrl } from "./endpoint.js"
 import {
   catalogToProbed,
   describeProbed,
+  isAuthoritative,
   parseModelIds,
   previewManualModels,
   probeEndpointOutcome,
@@ -14,6 +15,7 @@ import { getCatalog, listCatalogSites } from "./catalog.js"
 import { mergeDiscoveredIntoStored, probedToDraft, probedToDraftKeepingEdits, type V2ModelDraft } from "./v2-models.js"
 import { applyModelFields, MAX_TOKEN_LIMIT, readModelFields, REASONING_LEVELS, reasoningLabel, type ReasoningLevel } from "./model-fields.js"
 import { diffModels } from "./reconcile.js"
+import { chunkedAllSettled } from "./commands.js"
 import type { DisplayStyle, EnrichedModel } from "./enrich.js"
 
 import { id } from "./ids.js"
@@ -137,6 +139,8 @@ export interface ModelRow {
   image: boolean
   context?: number
   output?: number
+  /** True when the last endpoint probe reports a different context or output limit. */
+  endpointDiffers?: boolean
 }
 
 export interface ListModelsResult {
@@ -216,16 +220,33 @@ function validId(providerId: string): boolean {
   return /^[a-zA-Z0-9_-]+$/.test(providerId)
 }
 
+/** True when the endpoint measures a context or output limit that differs from the stored one. */
+function endpointLimitsDiffer(draft: V2ModelDraft, probed: ProbedModel): boolean {
+  const stored = draft.limit ?? {}
+  const contextDiffers = isAuthoritative(probed.contextSource) && probed.context !== undefined && probed.context !== stored.context
+  const outputDiffers = isAuthoritative(probed.maxOutputSource) && probed.maxOutput !== undefined && probed.maxOutput !== stored.output
+  return contextDiffers || outputDiffers
+}
+
+/** Writes only the endpoint's measured context and output limits. Leaves the rest of the
+ * draft (hand-set reasoning, image, limit.input) as stored. */
+function applyEndpointLimits(draft: V2ModelDraft, probed: ProbedModel): void {
+  const limit = { ...draft.limit }
+  if (probed.context !== undefined && isAuthoritative(probed.contextSource)) limit.context = probed.context
+  if (probed.maxOutput !== undefined && isAuthoritative(probed.maxOutputSource)) limit.output = probed.maxOutput
+  draft.limit = limit
+}
+
 function probeHint(error: unknown): string {
   const text = sanitizeErrorMessage(error)
   if (/\b(401|403)\b|revoked|unauthorized|invalid api key/i.test(text)) {
-    return "The endpoint rejected the API key. Check that the key is correct and still active, then try again."
+    return "The provider rejected the API key. Check that the key is correct and still active, then try again."
   }
   if (/\b404\b/.test(text)) {
-    return "The endpoint answered 404 (not found). Check the base URL - for OpenAI-compatible APIs it usually ends with /v1."
+    return "The provider's address was not found (404). Check the Base URL. It often ends with /v1."
   }
   if (/timed out|timeout|ENOTFOUND|ECONNREFUSED|fetch failed/i.test(text)) {
-    return "The endpoint could not be reached. Check the base URL and your internet connection."
+    return "The provider could not be reached. Check the Base URL and your internet connection."
   }
   return "Check the base URL and the API key, then try again."
 }
@@ -233,7 +254,7 @@ function probeHint(error: unknown): string {
 function zeroModelsHint(hasKey: boolean): string {
   return hasKey
     ? "The endpoint listed no models. Check the base URL - it usually ends with /v1."
-    : "The endpoint listed no models. Most gateways need an API key before they list models: add one and re-probe."
+    : "The provider sent no models. Most providers need an API key first: add one, then pick \"Reload all models\"."
 }
 
 /** The stored draft as the diff helpers see it (only the fields they compare).
@@ -419,7 +440,17 @@ export const setup = async (ctx: V2Context): Promise<void> => {
     }
     // A skipped record is not a deleted record: opencode keeps its own provider row, and the
     // transform can only disable it. Without this, a removed provider returns on the next load.
+    // A row the plugin does not manage and that is not one of its tombstones (dynamic: false) is
+    // the user's own config provider. A removed id that the user re-declared in config must stay on.
+    const configIds = new Set(
+      providers.list()
+        .filter(record => !managed.has(record.provider.id) && record.provider.settings?.dynamic !== false)
+        .map(record => record.provider.id),
+    )
     for (const providerId of removed) {
+      // A tombstone for a built-in id (e.g. "opencode") must never disable opencode's own provider.
+      if (collisionSuggestion(providerId)) continue
+      if (configIds.has(providerId)) continue
       providers.update(providerId, (provider) => {
         provider.activation = "disabled"
       })
@@ -528,21 +559,27 @@ export const setup = async (ctx: V2Context): Promise<void> => {
     unchanged: string[]
     empty: string[]
     failed: string[]
+    /** Hand-edited models whose endpoint limits differ; their stored values were kept. */
+    keptEdits: string[]
+    /** "provider/model" ids dropped because the endpoint answered without them. */
+    vanished: string[]
   }
 
   const refresh = async (only?: string): Promise<RefreshOutcome> => {
-    const outcome: RefreshOutcome = { checked: 0, updated: [], unchanged: [], empty: [], failed: [] }
+    const outcome: RefreshOutcome = { checked: 0, updated: [], unchanged: [], empty: [], failed: [], keptEdits: [], vanished: [] }
     let changed = false
-    for (const candidate of [...candidates.values()]) {
-      if (only !== undefined && candidate.providerId !== only) continue
-      outcome.checked++
-      let fresh: ProbeOutcome
-      try {
-        fresh = await discover(candidate)
-      } catch {
+    const droppedPairs: Array<[string, string]> = []
+    const picked = [...candidates.values()].filter(c => only === undefined || c.providerId === only)
+    outcome.checked = picked.length
+    // Network probes run in parallel (bounded); the writes below stay sequential.
+    const probes = await chunkedAllSettled(picked.map(c => () => discover(c)))
+    for (const [i, candidate] of picked.entries()) {
+      const settled = probes[i]
+      if (settled.status === "rejected") {
         outcome.failed.push(candidate.providerId)
         continue
       }
+      const fresh = settled.value
       lastProbe.set(candidate.providerId, fresh.models.length)
       lastProbeModels.set(candidate.providerId, fresh.models)
       if (fresh.models.length === 0) {
@@ -552,7 +589,22 @@ export const setup = async (ctx: V2Context): Promise<void> => {
       const models = modelsFor(candidate.providerId)
       // Compare content, not just the count: a model can change limits or price without changing the total.
       const before = fingerprint(models)
-      for (const probed of fresh.models) models.set(probed.id, probedToDraftKeepingEdits(models.get(probed.id), probed, candidate.displayStyle))
+      for (const probed of fresh.models) {
+        const stored = models.get(probed.id)
+        models.set(probed.id, probedToDraftKeepingEdits(stored, probed, candidate.displayStyle))
+        if (stored?.edited === true && endpointLimitsDiffer(stored, probed)) {
+          outcome.keptEdits.push(`${candidate.providerId}/${probed.id}`)
+        }
+      }
+      // Only reached with a non-empty answer (zero models and failures return above), so a
+      // dead or empty endpoint never wipes the stored list.
+      const answered = new Set(fresh.models.map(item => item.id))
+      for (const modelId of [...models.keys()]) {
+        if (answered.has(modelId)) continue
+        models.delete(modelId)
+        outcome.vanished.push(`${candidate.providerId}/${modelId}`)
+        droppedPairs.push([candidate.providerId, modelId])
+      }
       if (fingerprint(models) === before) outcome.unchanged.push(candidate.providerId)
       else outcome.updated.push(candidate.providerId)
       // The URL that answered, not the as-typed candidate, is what the next refresh should use.
@@ -561,6 +613,15 @@ export const setup = async (ctx: V2Context): Promise<void> => {
     }
     if (changed) {
       await persist()
+      // The replay only updates models still in the map, so the host record needs the
+      // dropped ids removed explicitly, the same way deleteModels does it.
+      if (droppedPairs.length > 0) {
+        await ctx.provider.transform((providers) => {
+          for (const [providerId, modelId] of droppedPairs) {
+            if (!discovered.get(providerId)?.has(modelId)) providers.models.remove(providerId, modelId)
+          }
+        })
+      }
       await reloadQuietly()
     }
     return outcome
@@ -937,6 +998,7 @@ if ((managed.has(input.providerId) || candidates.has(input.providerId)) && !inpu
         models: [...models.entries()]
           .map(([modelId, draft]) => {
             const fields = readModelFields(draft)
+            const probed = lastProbeModels.get(input.providerId)?.find(item => item.id === modelId)
             const row: ModelRow = {
               id: modelId,
               // Endpoint-provided, so it can carry control characters that break a host
@@ -951,6 +1013,7 @@ if ((managed.has(input.providerId) || candidates.has(input.providerId)) && !inpu
             // listModels call is rejected, leaving the provider unlistable.
             if (fields.context !== undefined) row.context = fields.context
             if (fields.output !== undefined) row.output = fields.output
+            if (probed && endpointLimitsDiffer(draft, probed)) row.endpointDiffers = true
             return row
           })
           .sort((a, b) => a.id.localeCompare(b.id)),
@@ -1005,14 +1068,39 @@ if ((managed.has(input.providerId) || candidates.has(input.providerId)) && !inpu
       }
     },
 
-    remove: async (providerId: string): Promise<{ message: string }> => {
+    useEndpointValues: async (input: { providerId: string; modelId: string }): Promise<{ status: "ok" | "unknown_provider" | "unknown_model" | "unavailable"; message: string }> => {
+      const candidate = candidates.get(input.providerId)
+      if (!candidate) return { status: "unknown_provider", message: `There is no provider named '${input.providerId}'. Run /custom-providers and choose "List my providers" to see them.` }
+      const models = discovered.get(input.providerId)
+      const draft = models?.get(input.modelId)
+      if (!models || !draft) return { status: "unknown_model", message: `Provider '${input.providerId}' has no model named '${input.modelId}'. Run /custom-providers and choose "Edit a provider" to check its models.` }
+      let fresh: ProbeOutcome
+      try {
+        fresh = await discover(candidate)
+      } catch (error) {
+        return { status: "unavailable", message: `Nothing was changed: the address ${candidate.baseURL} did not answer with a model list.\n${probeHint(error)}\n\nTechnical detail: ${sanitizeErrorMessage(error)}` }
+      }
+      lastProbe.set(input.providerId, fresh.models.length)
+      lastProbeModels.set(input.providerId, fresh.models)
+      const probed = fresh.models.find(item => item.id === input.modelId)
+      if (!probed) return { status: "unknown_model", message: `The endpoint no longer lists '${input.modelId}', so its values could not be read. Nothing was changed.` }
+      // Only this model's endpoint limits are overwritten. The rest of the draft, including
+      // hand-set reasoning, image and limit.input, is left as the user stored it.
+      applyEndpointLimits(draft, probed)
+      await persist()
+      await reloadQuietly()
+      return { status: "ok", message: `Updated ${input.modelId} from the endpoint.` }
+    },
+
+    remove: async (providerId: string): Promise<{ status: "ok" | "unknown_provider" | "from_config"; message: string }> => {
       const wasManaged = managed.delete(providerId)
       if (!wasManaged && !candidates.has(providerId)) {
-        return { message: `There is no provider named '${providerId}'. Run /custom-providers and choose "List my providers" to see them.` }
+        return { status: "unknown_provider", message: `There is no provider named '${providerId}'. Run /custom-providers and choose "List my providers" to see them.` }
       }
       if (!wasManaged) {
         // Derived from a host config record, so this plugin has nothing of its own to remove.
         return {
+          status: "from_config",
           message:
             `'${providerId}' comes from your opencode config, not from this plugin, so it was left alone.\n` +
             `Remove its entry from your opencode config to stop using it, or use /custom-providers, then "Edit a provider", to point it elsewhere.`,
@@ -1039,6 +1127,7 @@ if ((managed.has(input.providerId) || candidates.has(input.providerId)) && !inpu
       discovered.delete(providerId)
       await reloadQuietly()
       return {
+        status: "ok",
         message:
           `Removed '${providerId}' and its ${staleModels.length} model${staleModels.length === 1 ? "" : "s"}. ` +
           `Your other opencode settings are not touched. You can add it again later from /custom-providers.`,
@@ -1099,7 +1188,7 @@ if ((managed.has(input.providerId) || candidates.has(input.providerId)) && !inpu
       if (vanished.length > PREVIEW) lines.push(`  - ...and ${vanished.length - PREVIEW} more removed`)
       if (changes.length > 0) {
         lines.push('')
-        lines.push('Nothing has changed yet. Run "Reload all models" to apply everything, or "Review model changes" to choose.')
+        lines.push('Nothing has changed yet. Pick "Reload all models" to apply everything.')
       }
       return { message: lines.join("\n"), changes: changes.map(change => ({ id: change.id, kind: change.kind, detail: change.detail })) }
     },
@@ -1136,7 +1225,7 @@ if ((managed.has(input.providerId) || candidates.has(input.providerId)) && !inpu
         return { message: `Nothing was saved: the address ${candidate.baseURL} did not answer with a model list.\n${probeHint(error)}\n\nTechnical detail: ${sanitizeErrorMessage(error)}` }
       }
       // Same reasoning as reprobe: the URL that answered is what the next probe should
-      // start from, and this path is the one users hit most often through "Review model changes".
+      // start from, and this path is the one users hit most often through "Reload all models" and the probe check.
       if (rememberAnsweredUrl(candidate, fresh)) {
         await persist()
         await reloadQuietly()
@@ -1186,13 +1275,22 @@ if ((managed.has(input.providerId) || candidates.has(input.providerId)) && !inpu
       const lines: string[] = [`Checked ${outcome.checked} provider(s).`]
       if (outcome.updated.length > 0) lines.push(`Updated: ${outcome.updated.join(", ")}.`)
       if (outcome.unchanged.length > 0) lines.push(`Already up to date: ${outcome.unchanged.join(", ")}.`)
+      if (outcome.keptEdits.length > 0) {
+        lines.push(
+          `Kept your edits, the endpoint reports other limits: ${outcome.keptEdits.join(", ")}.\n` +
+            "To use the endpoint's values, open 'Edit a provider', pick the model, then 'Use the endpoint's values'.",
+        )
+      }
+      if (outcome.vanished.length > 0) {
+        lines.push(`Removed no longer offered: ${outcome.vanished.join(", ")}.`)
+      }
       if (outcome.empty.length > 0) {
         lines.push(`Answered but listed no models: ${outcome.empty.join(", ")}.`)
       }
       if (outcome.failed.length > 0) {
         lines.push(
           `Could not reach: ${outcome.failed.join(", ")}. Their saved models were kept.\n` +
-            "Fix it with /custom-providers: 'Edit a provider' to check the address and the API key, then 'Reload all models'.",
+            "Use 'Edit a provider', then 'Reload all models'.",
         )
       }
       if (outcome.updated.length === 0 && outcome.failed.length === 0 && outcome.empty.length === 0) {
@@ -1311,6 +1409,55 @@ if ((managed.has(input.providerId) || candidates.has(input.providerId)) && !inpu
       }
     },
 
+    /** Removes the saved API key. The host interface exposes no credential delete, so an empty
+     * key is written through the same connect.key path the save uses. Whether the host treats
+     * "" as a removal is unverified: the host's behaviour must be checked on a real install. */
+    clearKey: async (input: { providerId: string }): Promise<{ message: string }> => {
+      if (!managed.has(input.providerId) && !candidates.has(input.providerId)) {
+        return { message: `There is no provider named '${input.providerId}'. Run /custom-providers and choose "List my providers" to see them.` }
+      }
+      try {
+        await ctx.integration.connect.key({ integrationID: input.providerId, key: "" })
+      } catch (error) {
+        return { message: `The saved API key could NOT be cleared.\nTechnical detail: ${sanitizeErrorMessage(error)}` }
+      }
+      return { message: `Cleared the API key for '${input.providerId}'. The provider will be called without a key.` }
+    },
+
+    /** Appends model ids to an existing provider. Ids already stored are skipped and keep their
+     * settings, so this never rewrites the list or the provider's address, key or style. */
+    addModelIds: async (input: {
+      providerId: string
+      modelIds: string
+    }): Promise<{ status: "ok" | "invalid" | "unknown_provider"; message: string; added: number; skipped: number }> => {
+      const current = managed.get(input.providerId)
+      const models = discovered.get(input.providerId)
+      if (!current || !models) {
+        return {
+          status: "unknown_provider",
+          message: `There is no provider named '${input.providerId}'. Run /custom-providers and choose "List my providers" to see them.`,
+          added: 0,
+          skipped: 0,
+        }
+      }
+      const wanted = parseModelIds(input.modelIds) ?? []
+      if (wanted.length === 0) {
+        return { status: "invalid", message: "Enter at least one model id, separated by commas.", added: 0, skipped: 0 }
+      }
+      const previews = await previewManualModels(wanted, current.flavor ?? DEFAULT_FLAVOR, current.displayStyle ?? "slug")
+      const unique = [...new Map(previews.map(preview => [preview.id, preview.probed])).values()]
+      const fresh = unique.filter(probed => !models.has(probed.id))
+      const skipped = unique.length - fresh.length
+      for (const probed of fresh) models.set(probed.id, probedToDraft(probed, current.displayStyle ?? "slug"))
+      if (fresh.length > 0) {
+        await persist()
+        await reloadQuietly()
+      }
+      const lines = [`Added ${fresh.length} model${fresh.length === 1 ? "" : "s"} to '${input.providerId}'.`]
+      if (skipped > 0) lines.push(`${skipped} already present, kept as they were.`)
+      return { status: "ok", message: lines.join(" "), added: fresh.length, skipped }
+    },
+
     renameProvider: async (input: {
       providerId: string
       newId: string
@@ -1423,8 +1570,8 @@ if ((managed.has(input.providerId) || candidates.has(input.providerId)) && !inpu
       return {
         status: "ok",
         message:
-          `Done. '${input.providerId}' is now called '${clean}'. Its models and settings are unchanged.\n` +
-          `An API key saved for '${input.providerId}' stays stored under that name, so if sign-in fails afterwards, add the key again from /custom-providers.`,
+          `Done. '${input.providerId}' is now called '${clean}'. Models and settings are kept.\n` +
+          `Your API key was not moved. Enter it again for '${clean}' from /custom-providers.`,
       }
     },
   }
@@ -1534,6 +1681,7 @@ if ((managed.has(input.providerId) || candidates.has(input.providerId)) && !inpu
                     image: { type: "boolean" },
                     context: { type: "number" },
                     output: { type: "number" },
+                    endpointDiffers: { type: "boolean" },
                   },
                   required: ["id", "name", "reasoning", "reasoningLabel", "image"],
                   additionalProperties: false,
@@ -1575,7 +1723,14 @@ if ((managed.has(input.providerId) || candidates.has(input.providerId)) && !inpu
             required: ["providerId"],
             additionalProperties: false,
           },
-          output: MESSAGE_OUTPUT,
+          output: {
+            type: "object",
+            properties: {
+              status: { type: "string", enum: ["ok", "unknown_provider", "from_config"] },
+              message: { type: "string" },
+            },
+            required: ["status", "message"],
+          },
         },
         deleteModels: {
           input: {
@@ -1660,6 +1815,57 @@ if ((managed.has(input.providerId) || candidates.has(input.providerId)) && !inpu
           },
           output: MESSAGE_OUTPUT,
         },
+        useEndpointValues: {
+          input: {
+            type: "object",
+            properties: {
+              providerId: { type: "string" },
+              modelId: { type: "string" },
+            },
+            required: ["providerId", "modelId"],
+            additionalProperties: false,
+          },
+          output: {
+            type: "object",
+            properties: {
+              status: { type: "string", enum: ["ok", "unknown_provider", "unknown_model", "unavailable"] },
+              message: { type: "string" },
+            },
+            required: ["status", "message"],
+            additionalProperties: false,
+          },
+        },
+        addModelIds: {
+          input: {
+            type: "object",
+            properties: {
+              providerId: { type: "string" },
+              modelIds: { type: "string" },
+            },
+            required: ["providerId", "modelIds"],
+            additionalProperties: false,
+          },
+          output: {
+            type: "object",
+            properties: {
+              status: { type: "string", enum: ["ok", "invalid", "unknown_provider"] },
+              message: { type: "string" },
+              added: { type: "number" },
+              skipped: { type: "number" },
+            },
+            required: ["status", "message", "added", "skipped"],
+            additionalProperties: false,
+          },
+        },
+        clearKey: {
+          input: {
+            type: "object",
+            properties: { providerId: { type: "string" } },
+            required: ["providerId"],
+            additionalProperties: false,
+          },
+          output: MESSAGE_OUTPUT,
+        },
         refresh: { input: EMPTY_INPUT, output: MESSAGE_OUTPUT },
         "catalog.list": {
           input: EMPTY_INPUT,
@@ -1716,7 +1922,10 @@ if ((managed.has(input.providerId) || candidates.has(input.providerId)) && !inpu
       renameProvider: input => ops.renameProvider(input as Parameters<typeof ops.renameProvider>[0]),
       reprobe: input => ops.reprobe((input as { providerId: string }).providerId),
       apply: input => ops.apply(input as { providerId: string; decisions: string }),
+      useEndpointValues: input => ops.useEndpointValues(input as { providerId: string; modelId: string }),
       refresh: () => ops.refresh(),
+      addModelIds: input => ops.addModelIds(input as Parameters<typeof ops.addModelIds>[0]),
+      clearKey: input => ops.clearKey(input as { providerId: string }),
       "catalog.list": () => ops.catalogList(),
       "catalog.add": input => ops.catalogAdd(input as Parameters<typeof ops.catalogAdd>[0]),
     },

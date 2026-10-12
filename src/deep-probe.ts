@@ -135,8 +135,27 @@ export async function fetchLitellmInfo(
   return patch
 }
 
-/** New API-style public catalog: GET <origin>/api/models/public (no auth). */
+const PUBLIC_CATALOG_TTL_MS = 10 * 60 * 1000
+const publicCatalogCache = new Map<string, { at: number; map: Map<string, DetailPatch> }>()
+
+/** Clears the per-origin public catalog cache (tests and forced refresh). */
+export function resetPublicCatalogCache(): void {
+  publicCatalogCache.clear()
+}
+
+/**
+ * New API-style public catalog: GET <origin>/api/models/public (no auth).
+ * Cached per origin for 10 minutes; failures are not cached.
+ */
 export async function fetchPublicCatalog(origin: string): Promise<Map<string, DetailPatch>> {
+  const hit = publicCatalogCache.get(origin)
+  if (hit && Date.now() - hit.at < PUBLIC_CATALOG_TTL_MS) return hit.map
+  const map = await fetchPublicCatalogUncached(origin)
+  publicCatalogCache.set(origin, { at: Date.now(), map })
+  return map
+}
+
+async function fetchPublicCatalogUncached(origin: string): Promise<Map<string, DetailPatch>> {
   const raw = await getJson(`${origin}/api/models/public`, authHeaders(), 8_000)
   const list = Array.isArray(raw)
     ? raw

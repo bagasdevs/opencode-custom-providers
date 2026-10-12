@@ -16,6 +16,7 @@ import {
   fetchOllamaShow,
   fetchPublicCatalog,
   mapPool,
+  resetPublicCatalogCache,
   patchFromRecord,
   probeDeveloperRole,
   type DeepenContext,
@@ -27,10 +28,9 @@ afterEach(() => {
 })
 
 function stubFetch(handler: (url: string, init?: RequestInit) => Response | Promise<Response>) {
-  vi.stubGlobal(
-    "fetch",
-    ((url: unknown, init?: unknown) => handler(String(url), init as RequestInit)) as typeof fetch,
-  )
+  const spy = vi.fn((url: unknown, init?: unknown) => handler(String(url), init as RequestInit))
+  vi.stubGlobal("fetch", spy as unknown as typeof fetch)
+  return spy
 }
 
 function json(body: unknown, status = 200): Response {
@@ -98,9 +98,18 @@ describe("fetchPublicCatalog", () => {
     stubFetch(() => json([{ id: "a", context_length: 10 }]))
     const bare = await fetchPublicCatalog("https://x.example")
     expect(bare.get("a")?.context_length).toBe(10)
+    resetPublicCatalogCache()
     stubFetch(() => json({ data: [{ id: "b", max_output_tokens: 20 }] }))
     const wrapped = await fetchPublicCatalog("https://x.example")
     expect(wrapped.get("b")?.max_output_tokens).toBe(20)
+  })
+
+  it("serves repeat calls for the same origin from cache", async () => {
+    resetPublicCatalogCache()
+    const spy = stubFetch(() => json([{ id: "c", context_length: 30 }]))
+    await fetchPublicCatalog("https://cache.example")
+    await fetchPublicCatalog("https://cache.example")
+    expect(spy).toHaveBeenCalledTimes(1)
   })
 })
 
