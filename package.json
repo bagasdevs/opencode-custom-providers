@@ -1,7 +1,7 @@
 {
   "name": "opencode-custom-providers",
   "version": "1.0.2",
-  "description": "Dynamic model discovery for OpenAI-compatible providers in OpenCode with models.dev enrichment",
+  "description": "Dynamic model discovery for OpenAI-compatible, Gemini and Ollama providers in OpenCode with models.dev enrichment. Anthropic models are added from the catalog",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/bagasdevs/opencode-custom-providers.git"
