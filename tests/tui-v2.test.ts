@@ -11,7 +11,7 @@ function makeContext(
 ) {
   const calls: RpcCall[] = []
   const alerts: Array<{ title: string; message: string }> = []
-  const toasts: Array<{ title?: string; message: string }> = []
+  const toasts: Array<{ title?: string; message: string; variant?: string }> = []
   let layerFactory: (() => KeymapLayer) | undefined
   const confirmValues: Array<boolean | undefined> = []
   const selectOptions: Array<{ title: string; options?: ReadonlyArray<{ title: string; value: string }> }> = []

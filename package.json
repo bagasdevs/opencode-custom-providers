@@ -16,8 +16,7 @@
   "files": [
     "dist",
     "bundles",
-    "scripts/postinstall.js",
-    "CHANGELOG.md"
+    "scripts/postinstall.js"
   ],
   "exports": {
     ".": {

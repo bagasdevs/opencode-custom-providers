@@ -57,18 +57,7 @@ Type `/custom-providers` and pick one of these:
 
 The menu stays open after each action, so you can do several things in one visit. Press Esc to go back one step. Press Esc at the top menu to leave.
 
-**Edit a provider** lists these choices, in this order:
-
-1. **Base URL**: the address of the provider.
-2. **API key**: replace the saved key. Leave it empty and confirm to remove the key.
-3. **API type**: how the provider talks (most providers use OpenAI Chat).
-4. **Model names**: show model ids or friendly names.
-5. **Add models manually**: type model names yourself.
-6. **Delete models**: remove one or more models.
-7. **Model settings**: thinking level, image support, and length limits.
-8. **Rename**: change the provider's name.
-
-If a model's limits differ from what the provider reports, Reload says so and names the model. You can then choose **Use the endpoint's values** while editing it.
+**Edit a provider** has these choices: Base URL, API key, API type, Model names, Add models manually, Delete models, Model settings, and Rename.
 
 ### OpenCode v1: separate commands
 
