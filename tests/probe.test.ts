@@ -33,7 +33,6 @@ describe("parseModelIds (add-from-catalog selection)", () => {
     expect(parseModelIds(" , , ")).toEqual([])
   })
 })
-
 describe("gemini list auth", () => {
   it("appends ?key= to the gemini-list URL, preserving existing params, with no Authorization header", async () => {
     const seen: Array<{ url: string; headers: Record<string, string> }> = []
@@ -68,3 +67,31 @@ describe("gemini list auth", () => {
     expect(listCall?.headers["Content-Type"]).toBe("application/json")
   })
 })
+
+describe("gemini list path fallback", () => {
+  it("uses the live path without waiting for a hung first path", async () => {
+    // No timers: the first path stays pending forever, so a serial
+    // implementation hangs and the test times out instead of passing.
+    let v1betaCalls = 0
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((target: unknown) => {
+        const url = String(target)
+        if (url.includes("models.dev")) return Promise.resolve(new Response(JSON.stringify({}), { status: 200 }))
+        if (url.includes("/api/models/public")) return Promise.resolve(new Response(JSON.stringify([]), { status: 200 }))
+        if (url.includes("/v1beta/models")) {
+          v1betaCalls++
+          return new Promise<Response>(() => {})
+        }
+        if (url.includes("/models?key=") || url.includes("/models&key=") || url.includes("/models?alt=")) {
+          return Promise.resolve(new Response(JSON.stringify({ models: [{ name: "models/live-gemini" }] }), { status: 200 }))
+        }
+        return Promise.resolve(new Response(JSON.stringify({}), { status: 200 }))
+      }) as unknown as typeof fetch,
+    )
+    const probed = await probeEndpoint("https://gem2.example", "sk-test", "gemini")
+    expect(probed.map(m => m.id)).toContain("live-gemini")
+    expect(v1betaCalls).toBe(1)
+  })
+})
+

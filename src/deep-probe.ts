@@ -260,15 +260,18 @@ export async function deepenItem(
   }
 
   if (ctx.flavor === "openai-chat" || ctx.flavor === "openai-responses") {
-    try {
-      merged = applyPatch(merged, await fetchModelDetail(ctx.modelsUrl, item.id, ctx.apiKey))
+    // Best-effort pair fired together: one slow endpoint no longer blocks the
+    // other. Detail is awaited first so a complete answer returns without
+    // waiting for litellm (as before); litellm keeps its old precedence.
+    const detailP = fetchModelDetail(ctx.modelsUrl, item.id, ctx.apiKey).catch(() => undefined)
+    const litellmP = fetchLitellmInfo(ctx.origin, item.id, ctx.apiKey).catch(() => undefined)
+    const detail = await detailP
+    if (detail) {
+      merged = applyPatch(merged, detail)
       if (!needsDeep(merged)) return merged
-    } catch {
     }
-    try {
-      merged = applyPatch(merged, await fetchLitellmInfo(ctx.origin, item.id, ctx.apiKey))
-    } catch {
-    }
+    const litellm = await litellmP
+    if (litellm) merged = applyPatch(merged, litellm)
     return merged
   }
 

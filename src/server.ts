@@ -241,7 +241,7 @@ export const server: Plugin = async ({ client }) => {
           }
           lines.push(
             `Call apply-reconcile with a decisions object mapping model id to "apply", "keep", or "remove". ` +
-            `Defaults when omitted: added/updated -> apply, vanished -> keep.`,
+            `Defaults on this v1 path when omitted: added/updated -> apply, vanished -> keep.`,
           )
           return lines.join("\n")
         },

@@ -168,6 +168,33 @@ describe("deepenItem", () => {
     expect(urls).toContain("http://localhost:11434/api/show")
     expect(urls.some(u => u.includes("/api/tags/api/show"))).toBe(false)
   })
+  it("fires detail and litellm probes concurrently with litellm winning on overlap", async () => {
+    // No timers: the detail fetch stays pending until released, so a serial
+    // implementation never starts the litellm fetch before the release.
+    // (Promise.withResolvers needs Node 22+; CI runs Node 20, hence executor form.)
+    let releaseDetail!: (r: Response) => void
+    const detailGate = new Promise<Response>(res => { releaseDetail = res })
+    let detailReleased = false
+    let litellmBeforeRelease = false
+    stubFetch(url => {
+      if (url.endsWith("/api/models/public")) return json([])
+      if (url.includes("/model/info")) {
+        if (!detailReleased) litellmBeforeRelease = true
+        return json({ input_cost_per_token: 0.000002, output_cost_per_token: 0.000004 })
+      }
+      return detailGate
+    })
+    const pending = deepenItem({ id: "m3" }, CTX)
+    await Promise.resolve()
+    await Promise.resolve()
+    expect(litellmBeforeRelease).toBe(true)
+    detailReleased = true
+    releaseDetail(json({ context_window: 7_000, max_output_tokens: 700 }))
+    const out = await pending
+    expect(out.context_length).toBe(7_000)
+    expect(out.input_cost).toBe(2)
+    expect(out.output_cost).toBe(4)
+  })
 })
 
 describe("applyPatch", () => {

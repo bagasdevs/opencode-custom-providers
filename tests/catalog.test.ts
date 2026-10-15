@@ -209,6 +209,22 @@ describe("catalog memo (FIX4)", () => {
     await getCatalog()
     expect(calls2).toBe(1)
   })
+  it("writes the catalog cache compact (no pretty-print bloat)", async () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "catalog-compact-"))
+    try {
+      vi.mocked(os.homedir).mockReturnValue(home)
+      vi.stubGlobal(
+        "fetch",
+        (async () => new Response(JSON.stringify(CATALOG))) as typeof fetch,
+      )
+      await getCatalog()
+      const content = fs.readFileSync(path.join(home, ".cache", "opencode-custom-providers", "models-dev.json"), "utf-8")
+      expect(content).not.toContain("\n  ")
+      expect(JSON.parse(content).data).toBeDefined()
+    } finally {
+      fs.rmSync(home, { recursive: true, force: true })
+    }
+  })
 })
 
 describe("clearModelsDevCache TTL (FIX5)", () => {

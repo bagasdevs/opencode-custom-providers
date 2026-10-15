@@ -2034,7 +2034,7 @@ if ((managed.has(input.providerId) || candidates.has(input.providerId)) && !inpu
       name: "reprobe-models",
       description:
         "Re-probe a provider's endpoint and list model changes (added, vanished, metadata updated). Read-only: " +
-        "apply-reconcile persists decisions. Defaults per row: changed/vanished → keep, new → apply.",
+        "apply-reconcile persists decisions. Defaults on this v2 path per row: already stored → keep, new → apply.",
       input: {
         type: "object",
         properties: { providerId: { type: "string", description: "Which provider to check" } },
@@ -2046,7 +2046,7 @@ if ((managed.has(input.providerId) || candidates.has(input.providerId)) && !inpu
 
     tools.add({
       name: "apply-reconcile",
-      description: "Choose which model changes to accept (apply / keep / remove per model). Omitted ids default to keep when the model is already stored and apply when it is new.",
+      description: "Choose which model changes to accept (apply / keep / remove per model). Omitted ids default on this v2 path to keep when the model is already stored and apply when it is new.",
       input: {
         type: "object",
         properties: {

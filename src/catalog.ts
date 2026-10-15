@@ -91,7 +91,7 @@ function writeCache(data: Record<string, ModelsDevProvider>): void {
     }
     fs.writeFileSync(
       cacheFile(),
-      JSON.stringify({ timestamp: Date.now(), data }, null, 2),
+      JSON.stringify({ timestamp: Date.now(), data }),
       { mode: 0o600 },
     )
   } catch {

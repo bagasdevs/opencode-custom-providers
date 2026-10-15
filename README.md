@@ -3,6 +3,7 @@
 [![npm version](https://img.shields.io/npm/v/opencode-custom-providers)](https://www.npmjs.com/package/opencode-custom-providers)
 [![license](https://img.shields.io/badge/license-MIT-green)](./LICENSE)
 [![CI](https://github.com/bagasdevs/opencode-custom-providers/actions/workflows/ci.yml/badge.svg)](https://github.com/bagasdevs/opencode-custom-providers/actions)
+[![Socket Badge](https://badge.socket.dev/npm/package/opencode-custom-providers/1.0.2)](https://badge.socket.dev/npm/package/opencode-custom-providers/1.0.2)
 
 Add your own AI model providers to OpenCode with a few questions. The plugin finds the
 models for you, and you can change or remove them later from the same menu.

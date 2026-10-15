@@ -107,43 +107,51 @@ async function fetchFlavorModels(
   const spec = FLAVORS[flavor]
   if (spec.listShape === "none" || spec.listPaths.length === 0) return []
 
-  if (spec.listShape === "openai-list") {
-    // fetchEndpointModels appends /models itself when missing.
-    const errors: string[] = []
-    for (const p of spec.listPaths) {
-      try {
-        const url = new URL(base)
-        const clean = url.pathname.replace(/\/+$/, "")
-        const target = clean.endsWith(p) ? base : new URL(`${clean}${p}`, url.origin).toString()
-        const models = await fetchEndpointModels(target, apiKey)
-        if (models.length > 0) return models
-      } catch (error) {
-        errors.push(sanitizeErrorMessage(error))
-      }
+  // One candidate path, preserving the old per-path semantics exactly:
+  // openai-list throws (callers collect the error), others yield [] on failure.
+  const attempt = async (p: string): Promise<EndpointModelResponse[]> => {
+    const url = new URL(base)
+    const clean = url.pathname.replace(/\/+$/, "")
+    const target = clean.endsWith(p) ? base : new URL(`${clean}${p}`, url.origin).toString()
+    if (spec.listShape === "openai-list") {
+      // fetchEndpointModels appends /models itself when missing.
+      return fetchEndpointModels(target, apiKey)
     }
-    if (errors.length > 0) throw new Error(errors[errors.length - 1])
-    return []
+    // Google lists models with a ?key= query param (no Authorization header),
+    // and any pre-existing query params on the candidate URL are preserved.
+    const listUrl = geminiListUrl(target, spec.listShape, apiKey)
+    const res = await fetch(listUrl, {
+      headers: { "Content-Type": "application/json" },
+      signal: AbortSignal.timeout(15_000),
+    })
+    if (!res.ok) return []
+    const raw = await res.json() as Record<string, unknown>
+    return normalizeListShape(raw, spec.listShape)
   }
 
-  // ollama-tags / gemini-list: direct fetch + shape normalization.
-  for (const p of spec.listPaths) {
-    try {
-      const url = new URL(base)
-      const clean = url.pathname.replace(/\/+$/, "")
-      const target = clean.endsWith(p) ? base : new URL(`${clean}${p}`, url.origin).toString()
-      // Google lists models with a ?key= query param (no Authorization header),
-      // and any pre-existing query params on the candidate URL are preserved.
-      const listUrl = geminiListUrl(target, spec.listShape, apiKey)
-      const res = await fetch(listUrl, {
-        headers: { "Content-Type": "application/json" },
-        signal: AbortSignal.timeout(15_000),
-      })
-      if (!res.ok) continue
-      const raw = await res.json() as Record<string, unknown>
-      const items = normalizeListShape(raw, spec.listShape)
-      if (items.length > 0) return items
-    } catch {
-    }
+  // Every candidate fires together: one hung path no longer blocks a live one.
+  // First non-empty answer wins (paths are views of the same server). Errors
+  // keep list order so openai-list still throws the last path's error.
+  const errors: Array<string | undefined> = new Array(spec.listPaths.length)
+  const outcome = await new Promise<{ models?: EndpointModelResponse[] }>(resolve => {
+    let pending = spec.listPaths.length
+    spec.listPaths.forEach((p, i) => {
+      attempt(p).then(
+        models => {
+          if (models.length > 0) resolve({ models })
+          else if (--pending === 0) resolve({})
+        },
+        error => {
+          if (spec.listShape === "openai-list") errors[i] = sanitizeErrorMessage(error)
+          if (--pending === 0) resolve({})
+        },
+      )
+    })
+  })
+  if (outcome.models) return outcome.models
+  if (spec.listShape === "openai-list") {
+    const last = errors.filter(e => e !== undefined).pop()
+    if (last !== undefined) throw new Error(last)
   }
   return []
 }

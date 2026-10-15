@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Security
+- `npm audit` is clean (0 vulnerabilities): dropped the unused `@opentui/solid` dev dependency with its whole `@babel`/`seroval`/`browserslist` chain, `toml` resolved to 4.2.0, and `vitest` upgraded 3.2.7 → 5.0.4 (removing the dev-only `tinypool` RCE and `@vitest/mocker` file-read advisories; the test runner is never shipped in bundles)
+
+### Changed
+- CI runs Node 22 and `@types/node` is ^22 (vitest 5 requires Node ≥ 22.12)
+- Faster probes with identical results: per-model detail + LiteLLM fetches run concurrently, gemini/ollama list paths race (first non-empty answer wins), models.dev disk cache is written compact
+- Reconcile tool descriptions now state their own path's defaults (v1: added/updated → apply, vanished → keep; v2: stored → keep, new → apply). No behavior change
+
 ## [1.0.2] - 2026-10-10
 
 Re-probing stops overwriting hand-tuned models, and the v2 write path refuses, remembers and reports honestly.

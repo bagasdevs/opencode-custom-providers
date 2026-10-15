@@ -1068,7 +1068,7 @@ function writeCache(data) {
     }
     fs.writeFileSync(
       cacheFile(),
-      JSON.stringify({ timestamp: Date.now(), data }, null, 2),
+      JSON.stringify({ timestamp: Date.now(), data }),
       { mode: 384 }
     );
   } catch {
@@ -1439,15 +1439,15 @@ async function deepenItem(item, ctx, publicCatalog) {
     if (!needsDeep(merged)) return merged;
   }
   if (ctx.flavor === "openai-chat" || ctx.flavor === "openai-responses") {
-    try {
-      merged = applyPatch(merged, await fetchModelDetail(ctx.modelsUrl, item.id, ctx.apiKey));
+    const detailP = fetchModelDetail(ctx.modelsUrl, item.id, ctx.apiKey).catch(() => void 0);
+    const litellmP = fetchLitellmInfo(ctx.origin, item.id, ctx.apiKey).catch(() => void 0);
+    const detail = await detailP;
+    if (detail) {
+      merged = applyPatch(merged, detail);
       if (!needsDeep(merged)) return merged;
-    } catch {
     }
-    try {
-      merged = applyPatch(merged, await fetchLitellmInfo(ctx.origin, item.id, ctx.apiKey));
-    } catch {
-    }
+    const litellm = await litellmP;
+    if (litellm) merged = applyPatch(merged, litellm);
     return merged;
   }
   if (ctx.flavor === "ollama") {
@@ -1584,38 +1584,42 @@ function parseEffortOptions(item) {
 async function fetchFlavorModels(base, apiKey, flavor) {
   const spec = FLAVORS[flavor];
   if (spec.listShape === "none" || spec.listPaths.length === 0) return [];
+  const attempt = async (p) => {
+    const url = new URL(base);
+    const clean = url.pathname.replace(/\/+$/, "");
+    const target = clean.endsWith(p) ? base : new URL(`${clean}${p}`, url.origin).toString();
+    if (spec.listShape === "openai-list") {
+      return fetchEndpointModels(target, apiKey);
+    }
+    const listUrl = geminiListUrl(target, spec.listShape, apiKey);
+    const res = await fetch(listUrl, {
+      headers: { "Content-Type": "application/json" },
+      signal: AbortSignal.timeout(15e3)
+    });
+    if (!res.ok) return [];
+    const raw = await res.json();
+    return normalizeListShape(raw, spec.listShape);
+  };
+  const errors = new Array(spec.listPaths.length);
+  const outcome = await new Promise((resolve) => {
+    let pending = spec.listPaths.length;
+    spec.listPaths.forEach((p, i) => {
+      attempt(p).then(
+        (models) => {
+          if (models.length > 0) resolve({ models });
+          else if (--pending === 0) resolve({});
+        },
+        (error) => {
+          if (spec.listShape === "openai-list") errors[i] = sanitizeErrorMessage(error);
+          if (--pending === 0) resolve({});
+        }
+      );
+    });
+  });
+  if (outcome.models) return outcome.models;
   if (spec.listShape === "openai-list") {
-    const errors = [];
-    for (const p of spec.listPaths) {
-      try {
-        const url = new URL(base);
-        const clean = url.pathname.replace(/\/+$/, "");
-        const target = clean.endsWith(p) ? base : new URL(`${clean}${p}`, url.origin).toString();
-        const models = await fetchEndpointModels(target, apiKey);
-        if (models.length > 0) return models;
-      } catch (error) {
-        errors.push(sanitizeErrorMessage(error));
-      }
-    }
-    if (errors.length > 0) throw new Error(errors[errors.length - 1]);
-    return [];
-  }
-  for (const p of spec.listPaths) {
-    try {
-      const url = new URL(base);
-      const clean = url.pathname.replace(/\/+$/, "");
-      const target = clean.endsWith(p) ? base : new URL(`${clean}${p}`, url.origin).toString();
-      const listUrl = geminiListUrl(target, spec.listShape, apiKey);
-      const res = await fetch(listUrl, {
-        headers: { "Content-Type": "application/json" },
-        signal: AbortSignal.timeout(15e3)
-      });
-      if (!res.ok) continue;
-      const raw = await res.json();
-      const items = normalizeListShape(raw, spec.listShape);
-      if (items.length > 0) return items;
-    } catch {
-    }
+    const last = errors.filter((e) => e !== void 0).pop();
+    if (last !== void 0) throw new Error(last);
   }
   return [];
 }
