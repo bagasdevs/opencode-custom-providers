@@ -1,0 +1,10 @@
+name: OpenCode Custom Providers
+repo: https://github.com/bagasdevs/opencode-custom-providers
+npm: opencode-custom-providers
+tagline: Add your own AI model providers to OpenCode with a few questions.
+description: Dynamic model discovery for OpenAI-compatible, Gemini and Ollama providers in OpenCode, with models.dev enrichment. Anthropic models are added from the catalog.
+kind: plugin
+topics:
+  - providers
+compat: v2
+min_version: 1.14.0
