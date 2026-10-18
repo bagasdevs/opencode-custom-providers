@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- Coverage gate: `npm run test:coverage` (v8) with floors a little under the 1.0.3 baseline (62 statements / 58 branches / 68 functions / 63 lines), so a real regression fails the build
+- `release.yml` publishes a `v*` tag to npm with provenance, after checking that the tag matches `package.json`
+
+### Changed
+- CI runs a Node 22/24 matrix, fails on `npm audit --audit-level=high`, and fails when `bundles/` no longer matches `src/` (the bundles are what postinstall copies, so stale output would ship old code)
+
 ## [1.0.3] - 2026-10-18
 
 Targets the OpenCode V2 plugin API, so the plugin is accepted by catalogs that require V2.

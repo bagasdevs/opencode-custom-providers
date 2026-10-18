@@ -160,10 +160,15 @@ each version keeps its own list.
 npm install && npm run build   # clear dist/, then compile with tsc
 npm test                       # build, then run the node tests
 npm run test:src               # run the vitest suite
+npm run test:coverage          # vitest with the coverage gate
 npm run typecheck:tests        # type-check src and tests
 npm run lint                   # run eslint
 npm run bundles                # rebuild the bundles in bundles/
 ```
+
+CI runs Node 22 and 24, enforces a coverage floor, audits dependencies, and fails if `bundles/`
+drifts from `src/`. Pushing a `v*` tag runs `release.yml`, which checks the tag against
+`package.json` and publishes to npm with provenance.
 
 Two host packages are involved, and they are not interchangeable:
 
