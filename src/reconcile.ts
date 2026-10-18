@@ -83,13 +83,10 @@ function describeUpdate(
   return `${id}: ${parts.join(", ")}`
 }
 
-/** Fresh wins for the fields it reports; stored-only metadata survives. The
- * merge is explicit because a blind spread would wipe stored limit.input and cost.
+/** Fresh values win only when a probe measured them; stored metadata survives.
  *
- * With `sources` given, a fresh value only replaces a stored one when its probe
- * source is authoritative (detected or models.dev); a local rule or a fallback is
- * a guess and keeps the stored measurement. Without `sources` the legacy
- * overwrite behaviour is kept, so existing callers stay valid. */
+ * With `sources`, only an authoritative probe (detected, models.dev) replaces a
+ * stored value; without it the legacy overwrite behaviour applies. */
 export function mergeAppliedModel(stored: EnrichedModel, fresh: EnrichedModel, sources?: FreshSources): EnrichedModel {
   const limit: EnrichedModel["limit"] = { ...stored.limit }
   if (fresh.limit.context !== undefined && (stored.limit.context === undefined || freshWins(sources, sources?.contextSource))) {

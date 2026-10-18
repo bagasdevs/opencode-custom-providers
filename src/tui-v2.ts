@@ -207,10 +207,8 @@ async function wizardEditModels(ctx: V2TuiContext, providerId: string): Promise<
       ],
     })
     if (picked === "") return
-    // Only Esc means "go back quietly": this picker is a submenu of the edit wizard, so a
-    // cancel toast here would claim nothing changed right after an edit landed, and the
-    // wizard's own Esc already reports the real cancellation. The "Done" option uses the
-    // empty string, which the old falsy check swallowed before it could return.
+    // Only Esc means "go back quietly"; a cancel toast here would claim nothing
+    // changed right after an edit landed. "Done" returns "" and is not a cancel.
     if (picked === undefined) {
       cancelled(ctx)
       return
@@ -839,12 +837,8 @@ async function wizardList(ctx: V2TuiContext): Promise<void> {
 }
 
 async function wizardHub(ctx: V2TuiContext): Promise<void> {
-  // One command replaces eight, so the menu has to come back after an action: that is what
-  // makes a single visit enough to list, add, edit and delete.
-  //
-  // The hub owns the exit message. A sub-wizard reports its own cancellation, which is
-  // accurate: that flow really was abandoned. But once an action has run, leaving the hub
-  // must stay quiet, because "Nothing was changed" would be false.
+  // The hub loops so one visit can run several actions, and it owns the exit
+  // message: after an action, leaving must not claim "Nothing was changed".
   let ran = false
   for (;;) {
     const action = await ctx.ui.dialog.select({

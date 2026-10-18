@@ -67,16 +67,10 @@ const EDITOR_OWNED = ["capabilities", "limit", "reasoning", "thinkingLevelMap", 
  * and must never clobber a stored value. */
 const GATED: ReadonlySet<keyof V2ModelDraft> = new Set(["capabilities", "limit", "cost", "variants"])
 
-/** A probed draft, keeping the values a user set by hand.
+/** Merge a probe into a stored draft without losing hand-edited fields.
  *
- * A plain re-probe reports what the endpoint says about a model and would otherwise
- * replace the whole draft, so a tuned thinking level, image toggle, or token limit
- * would silently revert on the next refresh. Fields the endpoint measures and the
- * editor does not own (name, cost, family, status) still update.
- *
- * This is the chosen enforcement point: the v2 write path (server-v2.ts) only
- * reaches stored data through this function, while applyEnrichedToDraft runs
- * before any stored value exists and cannot see the probe sources. */
+ * Editor-owned values (thinking level, image toggle, limits) survive; measured
+ * fields update. This is the only probe-to-stored path in the v2 server. */
 export function probedToDraftKeepingEdits(
   existing: V2ModelDraft | undefined,
   probed: ProbedModel,

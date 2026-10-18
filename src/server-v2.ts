@@ -379,10 +379,8 @@ export const setup = async (ctx: V2Context): Promise<void> => {
       )
       if (candidate) found.set(providerId, candidate)
     }
-    // A skipped record is not a deleted record: opencode keeps its own provider row, and the
-    // transform can only disable it. Without this, a removed provider returns on the next load.
-    // A row the plugin does not manage and that is not one of its tombstones (dynamic: false) is
-    // the user's own config provider. A removed id that the user re-declared in config must stay on.
+    // A non-managed row without a tombstone (dynamic: false) is the user's own
+    // config provider: a removed id re-declared there must stay enabled.
     const configIds = new Set(
       providers.list()
         .filter(record => !managed.has(record.provider.id) && record.provider.settings?.dynamic !== false)
@@ -618,12 +616,8 @@ export const setup = async (ctx: V2Context): Promise<void> => {
     }
   }
 
-  /** Remember the address that actually answered.
-   *
-   * A probe walks candidate URLs (bare host, then /v1, then http for local hosts). Only
-   * refresh used to write the winner back, so a session that only ran /reprobe or
-   * /apply-reconcile kept the as-typed address and re-walked the candidates on every
-   * later probe. Returns true when something changed and the caller must persist. */
+  /** Store the URL that answered, so later probes skip the candidate walk.
+   * Returns true when the caller must persist. */
   const rememberAnsweredUrl = (candidate: Candidate, fresh: ProbeOutcome): boolean => {
     if (fresh.baseURL === candidate.baseURL) return false
     candidate.baseURL = fresh.baseURL
@@ -1072,10 +1066,9 @@ if ((managed.has(input.providerId) || candidates.has(input.providerId)) && !inpu
       lastProbe.delete(providerId)
       lastProbeModels.delete(providerId)
       candidates.delete(providerId)
-      // Drop the model entries too: deleting only the managed entry left every discovered
-      // model attached to the live provider, so they survived remove and a later re-add.
-      // The live record is read inside the transform, before the in-memory map is cleared.
-      // discovered still holds the model ids at this point; the transform's record may not.
+      // Drop model entries too, or discovered models survive a re-add. The live
+      // record is read inside the transform, so `discovered` must be captured
+      // before the map is cleared.
       const staleModels = [...(discovered.get(providerId)?.keys() ?? [])]
       await ctx.provider.transform((providers) => {
         providers.update(providerId, (provider) => {
@@ -1114,12 +1107,9 @@ if ((managed.has(input.providerId) || candidates.has(input.providerId)) && !inpu
       if (fresh.models.length === 0) {
         return { message: `The provider listed no models.\n${zeroModelsHint(Boolean(await credentialKey(providerId) ?? candidate.apiKey))}\n\nStored models were kept, so nothing broke.` }
       }
-      // Field-level diff, so a metadata change upstream is not reported as "up to date".
-      //
-      // storedModels is filled only by a successful transform replay. When that replay failed
-      // the map is empty, and diffing against an empty baseline reported every stored model as
-      // "new", inviting the user to apply changes they had already applied. Better to say the
-      // snapshot is stale than to invent a diff.
+      // Field-level diff: an upstream metadata change is still a change.
+      // A missing baseline means the transform replay failed; say so instead of
+      // reporting every stored model as new.
       const baseline = storedModels.get(providerId)
       if (!baseline) {
         return {
@@ -1480,10 +1470,8 @@ if ((managed.has(input.providerId) || candidates.has(input.providerId)) && !inpu
         lastProbe.set(clean, probedCount)
         lastProbe.delete(input.providerId)
       }
-      // defineProperty, not assignment: "__proto__" is a legal provider id (underscores
-      // pass validId) and a legal own key, but plain assignment would set the record's
-      // prototype instead of a key, and the provider would vanish from storage on the
-      // next write. This is the bug v1's renameProviderEntry was fixed for.
+      // defineProperty, not assignment: "__proto__" is a legal provider id and a
+      // legal own key, but assignment sets the prototype and loses the provider.
       const record: Record<string, unknown> = {}
       for (const [providerId, value] of managed) {
         Object.defineProperty(record, providerId, { value: recordFor(providerId, value), enumerable: true, writable: true, configurable: true })

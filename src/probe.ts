@@ -6,12 +6,9 @@ import { FLAVORS, DEFAULT_FLAVOR, type ProviderFlavor } from "./flavors.js"
 import { deepenEndpointItems } from "./deep-probe.js"
 import type { DisplayStyle, EnrichedModel } from "./enrich.js"
 
-// Tiered resolution: detected > models.dev > local-rules > api-fallback > default.
-// Cost is only ever taken from detected data or models.dev.
-//
-// Non-goals, kept out on purpose (not oversights, so do not add them here):
-// per-model HTTP headers / per-model baseURL override, $ENV and !command auth
-// serialization, models.yml runtime selection, video-input display.
+// Resolution tiers: detected > models.dev > local-rules > api-fallback > default.
+// Cost comes only from detected data or models.dev. Non-goals are deliberate:
+// per-model headers/baseURL, $ENV and !command auth, models.yml, video input.
 
 export type MetadataSource =
   | "detected"
@@ -573,14 +570,10 @@ export async function buildCatalogModels(
   return { baseURL: site.api, models, resolved, missing }
 }
 
-/** Resolve hand-typed ids against the local rules and the models.dev lookup.
+/** Resolve hand-typed ids without calling the provider endpoint.
  *
- * Contract, which callers depend on and must not break:
- *  - network-free with respect to the provider endpoint: no request is made to
- *    the user's baseURL. (models.dev is a public metadata DB, not the endpoint.)
- *  - an empty `ids` list resolves to an empty result; the helper does NOT fall
- *    back to "every known model". The caller (manualAdd) rejects an empty
- *    selection before calling, and must keep doing so. */
+ * Contract: empty `ids` means empty result, never "every known model"; callers
+ * reject an empty selection first. models.dev is metadata, not the endpoint. */
 
 export async function previewManualModels(
   ids: string[],

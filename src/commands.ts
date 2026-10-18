@@ -327,14 +327,9 @@ export function renameProviderEntry(
     return { error: `A provider with ID '${clean}' already exists.` }
   }
   entry.name = clean
-  // Rebuild in the existing key order so the renamed entry keeps its position:
-  // a delete-then-append would move it to the end and rewrite the config file's
-  // key order on every rename.
-  //
-  // defineProperty rather than assignment: a provider id of "__proto__" is accepted by
-  // validateProviderId and JSON.parse does create it as an own key, but `rebuilt[key] =`
-  // would set the object's prototype instead of a key, so that provider vanished from
-  // the config on the next write.
+  // Rebuild in key order so a renamed entry keeps its position.
+  // defineProperty, not assignment: an id like "__proto__" would set the
+  // prototype and the provider would vanish on the next write.
   const originalKeys = Object.keys(providers)
   const rebuilt: Record<string, ProviderConfig> = {}
   for (const key of originalKeys) {

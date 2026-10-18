@@ -1,9 +1,6 @@
-// Bundle-time stand-in for @opencode/plugin.
-//
-// Bundles install to a plugins directory with no node_modules, so importing the real package
-// would break a V1 host. The only runtime use is `define`, which is identity in the original.
-// Both export styles are provided: the root entry exposes `Plugin.define`, the /tui/plugin
-// subpath exposes `define` directly.
+// Bundle-time stand-in for @opencode/plugin: bundles install where no node_modules
+// exists, so the real package would break a V1 host. `define` is identity; both
+// export styles are provided (root `Plugin.define`, /tui/plugin `define`).
 export function define(plugin) {
   return plugin
 }
