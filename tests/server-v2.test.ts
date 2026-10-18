@@ -74,23 +74,24 @@ function makeContext() {
     method: { update: () => undefined },
   }
   const definitions: Record<string, { input?: unknown; output?: unknown }> = {}
-  const context: V2Context = {
+  // Partial double: only the members setup() reads.
+  const context = {
     provider: {
       // The host replays transforms on every reload, and reprobe resolves candidates
       // that only exist after one replays, so reload must actually re-run it.
-      transform: async callback => {
-        lastTransform = callback
+      transform: async (callback: (editor: typeof providerEditor) => void) => {
+        lastTransform = callback as unknown as typeof lastTransform
         await callback(providerEditor)
       },
       reload: async () => {
-        if (lastTransform) await lastTransform(providerEditor)
+        if (lastTransform) await lastTransform(providerEditor as never)
       },
     },
     integration: {
-      transform: async callback => callback(integrationEditor),
+      transform: async (callback: (editor: typeof integrationEditor) => unknown) => callback(integrationEditor),
       reload: async () => undefined,
       connect: {
-        key: async input => {
+        key: async (input: { integrationID: string; key: string }) => {
           keys.push(input)
         },
       },
@@ -100,7 +101,7 @@ function makeContext() {
       },
     },
     tool: {
-      transform: async callback =>
+      transform: async (callback: (editor: { namespace: () => void; add: () => void }) => unknown) =>
         callback({
           namespace: () => undefined,
           add: () => undefined,
@@ -108,12 +109,12 @@ function makeContext() {
     },
     storage: {
       get: async () => undefined,
-      set: async (_key, value) => {
+      set: async (_key: string, value: unknown) => {
         stored.push(value)
       },
     },
     rpc: {
-      register: async (definition, registered) => {
+      register: async (definition: unknown, registered: Record<string, (input: never) => Promise<unknown>>) => {
         Object.assign(handlers, registered)
         // Keep the schemas: the live host validates every result against the output
         // schema, so a status the schema omits fails at runtime with HTTP 500 even
@@ -123,7 +124,7 @@ function makeContext() {
         Object.assign(definitions, (definition as { methods?: Record<string, unknown> })?.methods ?? {})
       },
     },
-  }
+  } as unknown as V2Context
   return { context, handlers, keys, stored, records, definitions }
 }
 
@@ -451,6 +452,91 @@ describe("v2 reprobe", () => {
     const result = (await handlers["reprobe"]?.({ providerId: "nope" })) as ReprobeResult
     expect(result.message).toContain("no provider")
     expect(result.changes).toBeUndefined()
+  })
+})
+
+describe("v2: a provider is usable before the transform replay lands", () => {
+  // The real host returns from provider.reload() before it replays the transform, so the
+  // provider a caller just added is missing from the plugin's candidate map until that replay
+  // happens. Against the real host that made the next reprobe answer "there is no provider
+  // named X" for a provider that add had just reported as saved.
+  function deferredReplayContext() {
+    const records = new Map<string, { provider: Record<string, unknown>; models: Map<string, Record<string, unknown>> }>()
+    const handlers: Record<string, (input: unknown) => Promise<unknown>> = {}
+    const editor = {
+      list: () => [...records.values()],
+      get: (providerId: string) => records.get(providerId),
+      update: (providerId: string, update: (provider: Record<string, unknown>) => void) => {
+        const existing = records.get(providerId)
+        const provider = existing?.provider ?? { id: providerId, name: providerId, activation: "enabled" }
+        update(provider)
+        records.set(providerId, { provider, models: existing?.models ?? new Map() })
+      },
+      models: {
+        update: (providerId: string, modelId: string, update: (model: Record<string, unknown>) => void) => {
+          const record = records.get(providerId)
+          if (!record) return
+          const draft = record.models.get(modelId) ?? {}
+          update(draft)
+          record.models.set(modelId, draft)
+        },
+        remove: (providerId: string, modelID: string) => {
+          records.get(providerId)?.models.delete(modelID)
+        },
+      },
+    }
+    const stored = new Map<string, unknown>()
+    const context = {
+      provider: {
+        // Replay is deferred: it runs only when the test asks for it, like the real host.
+        transform: async () => undefined,
+        reload: async () => undefined,
+      },
+      integration: {
+        transform: async (callback: (editor: unknown) => unknown) => callback({
+          update: (id: string, update: (integration: { id: string; name: string }) => void) => update({ id, name: id }),
+          method: { update: () => undefined },
+        }),
+        reload: async () => undefined,
+        connect: { key: async () => undefined },
+        connection: { active: async () => undefined, resolve: async () => undefined },
+      },
+      tool: { transform: async () => undefined },
+      storage: {
+        get: async (key: string) => stored.get(key),
+        set: async (key: string, value: unknown) => {
+          stored.set(key, JSON.parse(JSON.stringify(value)))
+        },
+      },
+      rpc: {
+        register: async (_definition: unknown, registered: Record<string, (input: unknown) => Promise<unknown>>) => {
+          Object.assign(handlers, registered)
+        },
+      },
+    }
+    return { context: context as unknown as V2Context, handlers, replay: () => editor }
+  }
+
+  it("reprobes a provider that was just added, before any replay", async () => {
+    vi.stubGlobal("fetch", async (input: unknown) => {
+      if (String(input).includes("models.dev")) return new Response("{}", { status: 200 })
+      return new Response(JSON.stringify({ data: [{ id: "model-a" }, { id: "model-b" }] }), { status: 200 })
+    })
+    const host = deferredReplayContext()
+    await setup(host.context)
+
+    const added = (await host.handlers["add"]({ providerId: "deferred", baseURL: "https://deferred.example/v1" })) as { status: string }
+    expect(added.status).toBe("ok")
+
+    // No replay has run, yet both calls must already see the provider.
+    const listed = (await host.handlers["list"]({})) as { providers: Array<{ id: string; models: number }> }
+    expect(listed.providers.find(provider => provider.id === "deferred")?.models).toBe(2)
+
+    const reprobed = (await host.handlers["reprobe"]({ providerId: "deferred" })) as ReprobeResult
+    expect(reprobed.message).not.toContain("no provider named")
+    // A baseline must exist, or the diff is refused as unreadable.
+    expect(reprobed.message).not.toContain("could not be read")
+    expect(reprobed.message).toContain("Up to date")
   })
 })
 
@@ -785,14 +871,16 @@ describe("a failed storage read is not an empty store", () => {
   it("writes nothing when the initial read failed", async () => {
     const writes: Array<{ key: string; value: unknown }> = []
     const state = makeContext()
-    state.context.storage = {
-      get: async () => {
-        throw new Error("storage unavailable")
+    Object.assign(state.context, {
+      storage: {
+        get: async () => {
+          throw new Error("storage unavailable")
+        },
+        set: async (key: string, value: unknown) => {
+          writes.push({ key, value })
+        },
       },
-      set: async (key, value) => {
-        writes.push({ key, value })
-      },
-    }
+    })
     await setup(state.context)
     const add = state.handlers["add"]
     if (!add) throw new Error("add RPC was not registered")

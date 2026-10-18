@@ -5,15 +5,28 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [1.0.3] - 2026-10-18
 
-### Security
-- `npm audit` is clean (0 vulnerabilities): dropped the unused `@opentui/solid` dev dependency with its whole `@babel`/`seroval`/`browserslist` chain, `toml` resolved to 4.2.0, and `vitest` upgraded 3.2.7 → 5.0.4 (removing the dev-only `tinypool` RCE and `@vitest/mocker` file-read advisories; the test runner is never shipped in bundles)
+Targets the OpenCode V2 plugin API, so the plugin is accepted by catalogs that require V2.
+
+### Fixed
+- A provider added on OpenCode v2 is usable immediately. The host returns from `provider.reload()` before it replays the transform, so the provider was missing from the plugin's own list until that replay landed: `list` came back empty and a re-probe of the provider that had just been added answered "there is no provider named …". The added provider and its model snapshot are now registered as soon as the models are written
+- A re-probe issued right after an add no longer refuses to compare. The snapshot it diffs against is filled by the transform replay, which had not run yet, so it reported that opencode's list could not be read. The snapshot is now seeded when the models are written, and the replay overwrites it with the same data
+
+### Added
+- OpenCode v2 entry points use the published V2 plugin API: both `./server` and `./tui` export `Plugin.define({ id, setup })` beside the v1 hook, so one install serves both hosts
 
 ### Changed
+- Installing the plugin no longer pulls a dependency tree: `@opencode-ai/plugin` moved to peer and dev like `@opencode/plugin`, so `dependencies` is empty and a fresh install drops from 54 MB to 0.6 MB. Both hosts provide their own plugin package at load time, which is what the plugin imports, and the bundles keep a stand-in for the v2 package so one bundle still loads on either host
+- The v2 server and TUI code is typed against `@opencode/plugin` instead of local copies of the context interfaces. The local copies typechecked against themselves, so they could drift from the host without any signal; `ctx.provider`, `ctx.integration`, `ctx.storage`, `ctx.rpc` and `ctx.tool` are now checked against the real definitions
+- The v2 TUI plugin registers under its own id (`opencode-custom-providers.tui`) instead of reusing the server id. V2 keeps both halves in one namespace, so the shared id was a collision
+- The bundles alias `@opencode/plugin` to an inlined identity stub. Bundles are copied to a plugins directory with no `node_modules`, so a runtime import of the V2 package would have failed to load on an OpenCode v1 host
 - CI runs Node 22 and `@types/node` is ^22 (vitest 5 requires Node ≥ 22.12)
 - Faster probes with identical results: per-model detail + LiteLLM fetches run concurrently, gemini/ollama list paths race (first non-empty answer wins), models.dev disk cache is written compact
 - Reconcile tool descriptions now state their own path's defaults (v1: added/updated → apply, vanished → keep; v2: stored → keep, new → apply). No behavior change
+
+### Security
+- `npm audit` is clean (0 vulnerabilities): dropped the unused `@opentui/solid` dev dependency with its whole `@babel`/`seroval`/`browserslist` chain, `toml` resolved to 4.2.0, and `vitest` upgraded 3.2.7 → 5.0.4 (removing the dev-only `tinypool` RCE and `@vitest/mocker` file-read advisories; the test runner is never shipped in bundles)
 
 ## [1.0.2] - 2026-10-10
 

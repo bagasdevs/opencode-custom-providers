@@ -1,5 +1,5 @@
 // Dev-only bundler: emits self-contained ESM plugin files into bundles/.
-import { buildSync } from "esbuild";
+import { build } from "esbuild";
 import { mkdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -7,6 +7,18 @@ import { fileURLToPath } from "node:url";
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const outdir = join(root, "bundles");
 mkdirSync(outdir, { recursive: true });
+
+// V1 packages stay external: the host provides them. @opencode/plugin is rewritten to a stub
+// because bundles land in a directory with no node_modules, and a V1 host cannot resolve it.
+const v2Stub = join(root, "scripts", "v2-plugin-stub.mjs");
+
+/** @type {import("esbuild").Plugin} */
+const v2StubPlugin = {
+  name: "v2-plugin-stub",
+  setup(build) {
+    build.onResolve({ filter: /^@opencode\/plugin(\/.*)?$/ }, () => ({ path: v2Stub }));
+  },
+};
 
 const targets = [
   {
@@ -22,13 +34,14 @@ const targets = [
 ];
 
 for (const t of targets) {
-  buildSync({
+  await build({
     bundle: true,
     platform: "node",
     format: "esm",
     entryPoints: [t.entry],
     outfile: t.outfile,
     external: t.external,
+    plugins: [v2StubPlugin],
   });
   console.log(`bundled ${t.outfile}`);
 }

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { setup, type DialogApi, type KeymapLayer, type V2TuiContext } from "../src/tui-v2.js"
+import { setup, type KeymapLayer, type V2TuiContext } from "../src/tui-v2.js"
 
 type RpcCall = { rpcID: string; method: string; input?: unknown }
 
@@ -15,24 +15,25 @@ function makeContext(
   let layerFactory: (() => KeymapLayer) | undefined
   const confirmValues: Array<boolean | undefined> = []
   const selectOptions: Array<{ title: string; options?: ReadonlyArray<{ title: string; value: string }> }> = []
-  const dialog: DialogApi = {
-    alert: async options => {
+  // Partial double: only the prompts the menu uses.
+  const dialog = {
+    alert: async (options: { title: string; message: string }) => {
       alerts.push(options)
     },
     // Undefined keeps the historical always-confirm behaviour the existing tests rely on.
     confirm: async () => confirmValues.shift() ?? true,
     prompt: async () => promptValues.shift(),
-    select: async options => {
+    select: async (options: { title: string; options?: ReadonlyArray<{ title: string; value: string }> }) => {
       selectOptions.push(options)
       return selectValues.shift()
     },
   }
-  const context: V2TuiContext = {
+  const context = {
     options: {},
     client: {
       rpc: {
-        call: async input => {
-          calls.push(input)
+        call: async (input: { rpcID: string; method: string; input?: unknown }) => {
+          calls.push(input as unknown as RpcCall)
           // `list` is a side probe (the duplicate-name guard), not part of the scripted RPC
           // sequence these tests assert on, so it must not consume a scripted response.
           if (input.method === "list") return { output: { providers: listProviders } }
@@ -42,15 +43,15 @@ function makeContext(
     },
     ui: {
       dialog,
-      toast: { show: options => { toasts.push(options) } },
+      toast: { show: (options: { title?: string; message: string; variant?: string }) => { toasts.push(options) } },
       panel: { open: () => true },
     },
     keymap: {
-      layer: factory => {
+      layer: (factory: () => KeymapLayer) => {
         layerFactory = factory
       },
     },
-  }
+  } as unknown as V2TuiContext
   return { context, calls, alerts, toasts, confirmValues, selectOptions, getLayer: () => layerFactory?.() }
 }
 

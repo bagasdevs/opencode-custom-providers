@@ -68,9 +68,10 @@ function createHost(storage: Map<string, unknown>) {
   }
 
   const editor = createEditor()
-  const context: V2Context = {
+  // Partial double: only the members setup() reads.
+  const context = {
     provider: {
-      transform: async callback => {
+      transform: async (callback: (editor: never) => void) => {
         transforms.push(callback as unknown as (editor: ReturnType<typeof createEditor>) => void)
         await callback(editor as never)
         return undefined
@@ -81,7 +82,7 @@ function createHost(storage: Map<string, unknown>) {
       },
     },
     integration: {
-      transform: async callback => callback({
+      transform: async (callback: (editor: never) => unknown) => callback({
         update: (integrationID: string, update: (integration: { id: string; name: string }) => void) =>
           update({ id: integrationID, name: integrationID }),
         method: { update: () => undefined },
@@ -94,26 +95,26 @@ function createHost(storage: Map<string, unknown>) {
       },
     },
     tool: {
-      transform: async callback => callback({
+      transform: async (callback: (editor: never) => unknown) => callback({
         namespace: () => undefined,
         add: () => undefined,
       } as never),
     },
     storage: {
-      get: async key => storage.get(key),
+      get: async (key: string) => storage.get(key),
       // Round-trip through JSON so the test sees exactly what a real storage backend would return.
-      set: async (key, value) => {
+      set: async (key: string, value: unknown) => {
         storage.set(key, JSON.parse(JSON.stringify(value)) as unknown)
       },
     },
     rpc: {
-      register: async (_definition, handlers) => {
+      register: async (_definition: unknown, handlers: Record<string, (input: unknown) => Promise<unknown>>) => {
         for (const [name, handler] of Object.entries(handlers)) {
           rpc[name] = input => handler(input)
         }
       },
     },
-  }
+  } as unknown as V2Context
 
   const modelIds = (providerID: string): string[] => [...(models.get(providerID)?.keys() ?? [])]
 

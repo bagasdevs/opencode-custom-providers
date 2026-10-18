@@ -1,3 +1,8 @@
+// scripts/v2-plugin-stub.mjs
+function define(plugin) {
+  return plugin;
+}
+
 // src/flavors.ts
 var FLAVORS = {
   "openai-chat": {
@@ -2975,7 +2980,9 @@ This cannot be undone.`
     }
   ]);
 };
-var tui_default = { id, tui, setup };
+var definition = { id: id2, setup };
+var dual = { ...definition, tui };
+var tui_default = define(dual);
 export {
   tui_default as default,
   id,

@@ -78,10 +78,11 @@ function createHost(): Host {
   })
 
   let definition: unknown
-  const ctx: V2Context = {
+  // Partial double: only the members setup() reads.
+  const ctx = {
     storage: {
-      get: async key => storage.get(key),
-      set: async (key, value) => {
+      get: async (key: string) => storage.get(key),
+      set: async (key: string, value: unknown) => {
         storage.set(key, JSON.parse(JSON.stringify(value)))
       },
     },
@@ -89,22 +90,22 @@ function createHost(): Host {
       reload: async () => {
         for (const transform of transforms) transform(createEditor())
       },
-      transform: async callback => {
-        transforms.push(callback as (providers: unknown) => void)
+      transform: async (callback: (providers: unknown) => void) => {
+        transforms.push(callback)
         callback(createEditor())
       },
     },
     integration: {
-      transform: async callback => {
+      transform: async (callback: (editor: unknown) => unknown) => {
         // registerIntegration names the integration and attaches its sign-in methods.
         callback({
-          update: (id, update) => {
+          update: (id: string, update: (integration: { id: string; name: string; methods: unknown[] }) => void) => {
             const integration = integrations.get(id) ?? { id, name: "", methods: [] }
             update(integration)
             integrations.set(id, integration)
           },
           method: {
-            update: input => {
+            update: (input: { integrationID: string; method: { type: string; [k: string]: unknown } }) => {
               const integration = integrations.get(input.integrationID) ?? { id: input.integrationID, name: "", methods: [] }
               integration.methods.push(input.method)
               integrations.set(input.integrationID, integration)
@@ -117,7 +118,7 @@ function createHost(): Host {
       connection: { active: async () => undefined, resolve: async () => undefined },
     },
     rpc: {
-      register: async (def, registered) => {
+      register: async (def: unknown, registered: Record<string, unknown>) => {
         definition = def
         for (const [method, handler] of Object.entries(registered)) {
           handlers[method] = handler as Host["handlers"][string]
@@ -125,17 +126,17 @@ function createHost(): Host {
       },
     },
     tool: {
-      transform: async callback => {
+      transform: async (callback: (editor: unknown) => unknown) => {
         // namespace/add are the agent-facing surface; the fake keeps them for assertions.
         callback({
           namespace: () => undefined,
-          add: tool => {
+          add: (tool: { name: string; description: string; input: Record<string, unknown> }) => {
             tools.push({ name: tool.name, description: tool.description, input: tool.input })
           },
         })
       },
     },
-  }
+  } as unknown as V2Context
 
   return {
     ctx,
@@ -604,11 +605,12 @@ function makeTui(script: TuiScript) {
   const rpcCalls: Array<{ method: string; input?: unknown }> = []
   let layer: KeymapLayer | undefined
 
-  const context: V2TuiContext = {
+  // Partial double: only the members setup() reads.
+  const context = {
     options: {},
     client: {
       rpc: {
-        call: async ({ method, input }) => {
+        call: async ({ method, input }: { method: string; input?: unknown }) => {
           rpcCalls.push({ method, input })
           return { output: script.responses[method] }
         },
@@ -616,31 +618,31 @@ function makeTui(script: TuiScript) {
     },
     ui: {
       dialog: {
-        alert: async options => {
+        alert: async (options: { title: string; message: string }) => {
           alerts.push(options)
           events.push(`alert:${options.title}`)
         },
-        confirm: async options => {
+        confirm: async (options: { title: string; message: string }) => {
           events.push(`confirm:${options.title}`)
           return confirms.shift() ?? false
         },
-        prompt: async options => {
+        prompt: async (options: { title: string }) => {
           events.push(`prompt:${options.title}`)
           return prompts.shift()
         },
-        select: async options => {
+        select: async (options: { title: string; options?: ReadonlyArray<{ title: string; value: string }> }) => {
           events.push(`select:${options.title}`)
           return selects.shift()
         },
       },
-      toast: { show: options => {
+      toast: { show: (options: { message: string; variant?: string }) => {
         toasts.push(options)
         events.push(`toast:${options.variant ?? "info"}`)
       } },
       panel: { open: () => true },
     },
-    keymap: { layer: factory => { layer = factory() } },
-  }
+    keymap: { layer: (factory: () => KeymapLayer) => { layer = factory() } },
+  } as unknown as V2TuiContext
 
   return { context, toasts, alerts, rpcCalls, events, getLayer: () => layer }
 }

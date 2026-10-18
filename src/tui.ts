@@ -1,5 +1,7 @@
 import type { TuiPlugin, TuiPluginApi } from "@opencode-ai/plugin/tui"
-import { setup as setupV2 } from "./tui-v2.js"
+// The /tui/plugin subpath is the same `define` without the Solid layer a test process can't load.
+import * as Plugin from "@opencode/plugin/tui/plugin"
+import { id as tuiId, setup as setupV2 } from "./tui-v2.js"
 import type { DisplayStyle } from "./discovery.js"
 import type { ProviderConfig } from "./types.js"
 import {
@@ -689,4 +691,8 @@ export const tui: TuiPlugin = async (api: TuiPluginApi) => {
   ])
 }
 
-export default { id, tui, setup: setupV2 }
+// One default export for both hosts: V1 reads `tui`, V2 reads `id` + `setup`.
+// The id is the TUI one: V2 keeps both halves in one namespace, so the server id would collide.
+const definition = { id: tuiId, setup: setupV2 } satisfies Plugin.Definition
+const dual: Plugin.Definition & { tui: TuiPlugin } = { ...definition, tui }
+export default Plugin.define(dual)

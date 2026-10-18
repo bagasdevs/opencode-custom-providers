@@ -1,6 +1,12 @@
 // src/server.ts
 import { tool } from "@opencode-ai/plugin";
 
+// scripts/v2-plugin-stub.mjs
+function define(plugin) {
+  return plugin;
+}
+var Plugin = { define };
+
 // src/security.ts
 var VALID_PROTOCOLS = /* @__PURE__ */ new Set(["http:", "https:"]);
 function isValidUrl(url) {
@@ -1928,13 +1934,16 @@ var setup = async (ctx) => {
     for (const [providerId, entry] of managed) {
       if (found.has(providerId) || removed.has(providerId)) continue;
       const candidate = candidateFrom(
-        { provider: { id: providerId, name: providerId, activation: "enabled" }, models: /* @__PURE__ */ new Map() },
+        {
+          provider: { id: providerId, name: providerId, activation: "enabled" },
+          models: /* @__PURE__ */ new Map()
+        },
         entry
       );
       if (candidate) found.set(providerId, candidate);
     }
     const configIds = new Set(
-      providers.list().filter((record) => !managed.has(record.provider.id) && record.provider.settings?.dynamic !== false).map((record) => record.provider.id)
+      providers.list().filter((record) => !managed.has(record.provider.id) && record.provider.settings?.dynamic !== false).map((record) => String(record.provider.id))
     );
     for (const providerId of removed) {
       if (collisionSuggestion(providerId)) continue;
@@ -1954,8 +1963,9 @@ var setup = async (ctx) => {
     for (const [providerId, models] of discovered) {
       for (const [modelId, draft] of models) {
         providers.models.update(providerId, modelId, (model) => {
-          mergeDiscoveredIntoStored(model, draft);
-          model[DISCOVERED] = true;
+          const mutable = model;
+          mergeDiscoveredIntoStored(mutable, draft);
+          mutable[DISCOVERED] = true;
         });
       }
     }
@@ -2023,8 +2033,19 @@ var setup = async (ctx) => {
     for (const probed of fresh) models.set(probed.id, probedToDraftKeepingEdits(models.get(probed.id), probed, displayStyle));
     const entry = managed.get(providerId);
     if (entry) entry.baseURL = baseURL;
+    const known = candidates.get(providerId);
+    candidates.set(providerId, {
+      providerId,
+      baseURL,
+      apiKey: known?.apiKey,
+      overrideKey: known?.overrideKey,
+      flavor: known?.flavor ?? DEFAULT_FLAVOR,
+      displayStyle
+    });
     await persist();
     await reloadQuietly();
+    storedIds.set(providerId, new Set(models.keys()));
+    storedModels.set(providerId, new Map([...models].map(([modelId, draft]) => [modelId, storedModelView(modelId, draft)])));
   };
   const refresh = async (only) => {
     const outcome = { checked: 0, updated: [], unchanged: [], empty: [], failed: [], keptEdits: [], vanished: [] };
@@ -2846,8 +2867,9 @@ Pick a different name, or remove '${clean}' with /custom-providers first.`
         }
         for (const [modelId, draft] of discovered.get(clean) ?? /* @__PURE__ */ new Map()) {
           providers.models.update(clean, modelId, (model) => {
-            mergeDiscoveredIntoStored(model, draft);
-            model[DISCOVERED] = true;
+            const mutable = model;
+            mergeDiscoveredIntoStored(mutable, draft);
+            mutable[DISCOVERED] = true;
           });
         }
       });
@@ -3788,7 +3810,9 @@ var server = async ({ client }) => {
     }
   };
 };
-var server_default = { id, server, setup };
+var definition = { id, setup };
+var dual = { ...definition, server };
+var server_default = Plugin.define(dual);
 export {
   server_default as default,
   getApiKey,

@@ -3,7 +3,7 @@
 [![npm version](https://img.shields.io/npm/v/opencode-custom-providers)](https://www.npmjs.com/package/opencode-custom-providers)
 [![license](https://img.shields.io/badge/license-MIT-green)](./LICENSE)
 [![CI](https://github.com/bagasdevs/opencode-custom-providers/actions/workflows/ci.yml/badge.svg)](https://github.com/bagasdevs/opencode-custom-providers/actions)
-[![Socket Badge](https://badge.socket.dev/npm/package/opencode-custom-providers/1.0.2)](https://badge.socket.dev/npm/package/opencode-custom-providers/1.0.2)
+[![Socket Badge](https://badge.socket.dev/npm/package/opencode-custom-providers/1.0.3)](https://badge.socket.dev/npm/package/opencode-custom-providers/1.0.3)
 
 Add your own AI model providers to OpenCode with a few questions. The plugin finds the
 models for you, and you can change or remove them later from the same menu.
@@ -15,6 +15,10 @@ models for you, and you can change or remove them later from the same menu.
 
 Not sure which one you have? Check the version shown by `opencode`.
 
+Both versions are served from one package: the plugin exports the OpenCode v1 hook and the
+OpenCode v2 `Plugin.define({ id, setup })` entry point side by side, so the same install works
+on either. On v2 the plugin loads through `@opencode/plugin`.
+
 ## Install
 
 ```bash
@@ -24,8 +28,10 @@ opencode plugin add opencode-custom-providers
 Then check that it loaded and restart OpenCode:
 
 ```bash
-opencode plugin opencode-custom-providers
+opencode plugin list
 ```
+
+It should appear in the list as `opencode-custom-providers`.
 
 Installing from GitHub instead: `bun add github:bagasdevs/opencode-custom-providers && bun pm trust opencode-custom-providers`.
 
@@ -39,6 +45,10 @@ Use the same steps on both versions. Only the way you open the menu is different
 2. Choose **My own API**.
 3. Enter the address (for example `https://api.example.com/v1`) and your API key.
 4. Wait a few seconds. The models are found and saved for you.
+
+The provider is ready as soon as those steps finish: it appears in the menu, its models
+appear in the model picker, and checking it again compares against what was just saved.
+You do not need to restart OpenCode in between.
 
 Want a provider without checking the address? Choose **Built-in list** instead.
 
@@ -66,13 +76,13 @@ OpenCode v1 has one command per task. Type the command name:
 
 | Command | What it does |
 | --- | --- |
-| `/list-custom-providers` | Shows each provider and its models |
 | `/add-provider` | Adds a provider. Choose **My own API** or **Built-in list** |
 | `/edit-provider` | Changes a provider |
 | `/delete-provider` | Removes a provider and its models |
 | `/reload-models` | Refreshes the models of every provider |
-| `/add-known-provider` | Adds a provider from the built-in list |
 | `/reprobe-models` | Checks a provider again and shows what changed |
+
+OpenCode v1 has no command for listing providers; `/edit-provider` shows them first.
 
 Press Esc to cancel. Esc reports the cancellation once.
 
@@ -83,9 +93,11 @@ Press Esc to cancel. Esc reports the cancellation once.
 | Open the menu | Separate commands | `/custom-providers` |
 | Reload | `/reload-models` | Reload all models in the menu |
 | Review model changes | `/reprobe-models` | Use Reload, then Edit |
-| Plugin entry points | `./server`, `./tui` | `.` (server), `./tui` |
+| Plugin entry points | `server` / `tui` exports | `./server` and `./tui`, each with `Plugin.define` |
 
-An OpenCode v1 plugin does not run on OpenCode v2. To move to OpenCode v2, run `opencode upgrade --major`, then install the plugin again.
+An OpenCode v1 plugin does not run on OpenCode v2, and the reverse is also true. This package
+ships both entry points, so one install covers whichever version you have. To move to OpenCode
+v2, run `opencode upgrade --major`, then install the plugin again.
 
 ## For the AI assistant (agent tools)
 
@@ -108,7 +120,7 @@ The model can call these tools. You do not type them yourself. Ask in plain word
 
 ## Configuration
 
-A provider is saved in OpenCode's config. You can also write one by hand:
+On OpenCode v1 a provider is saved in OpenCode's config. You can also write one by hand:
 
 ```json
 {
@@ -132,6 +144,10 @@ The plugin looks for models on providers that have `options.baseURL` and either 
 
 Model rules are kept in `~/.opencode-custom-providers-rules.json`.
 
+On OpenCode v2 the provider list is kept in the host's own plugin storage instead, and the
+config block above is not read. Providers added on v1 do not appear on v2, and the reverse:
+each version keeps its own list.
+
 ## Security
 
 - Keys are kept in OpenCode's credential store, not in plain text in your project.
@@ -148,6 +164,21 @@ npm run typecheck:tests        # type-check src and tests
 npm run lint                   # run eslint
 npm run bundles                # rebuild the bundles in bundles/
 ```
+
+Two host packages are involved, and they are not interchangeable:
+
+- `@opencode-ai/plugin` (v1) — the `server` and `tui` hooks.
+- `@opencode/plugin` (v2) — `Plugin.define`, the context types, and the RPC/TUI surface.
+
+Both are peer and dev dependencies, never runtime ones. Each host provides its own package when
+loading a plugin, so nothing has to be installed alongside this one; publishing either as a
+runtime dependency would pull `effect` and its chain (about 54 MB) into every consumer. The
+package ships with an empty `dependencies`, and `tests/v2-contract.test.ts` fails if that
+changes.
+
+The bundles in `bundles/` alias `@opencode/plugin` to `scripts/v2-plugin-stub.mjs`, which
+re-exports the same identity `define`. That keeps one bundle loadable on both hosts, because a
+bundle is copied to a plugins directory that has no `node_modules`.
 
 ## License
 

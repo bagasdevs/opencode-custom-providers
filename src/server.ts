@@ -1,5 +1,6 @@
-import type { Plugin } from "@opencode-ai/plugin"
+import type { Plugin as V1Plugin } from "@opencode-ai/plugin"
 import { tool } from "@opencode-ai/plugin"
+import { Plugin } from "@opencode/plugin"
 import { discoverAndEnrich } from "./discovery.js"
 import { sanitizeErrorMessage, sanitizeUrl, isValidUrl } from "./security.js"
 import {
@@ -31,7 +32,7 @@ export { id }
 export type { ProviderConfig, OpenCodeConfig } from "./types.js"
 export { getApiKey } from "./types.js"
 
-export const server: Plugin = async ({ client }) => {
+export const server: V1Plugin = async ({ client }) => {
   const bridge = createServerBridge(client)
   await client.app.log({
     body: {
@@ -521,4 +522,8 @@ export const server: Plugin = async ({ client }) => {
   }
 }
 
-export default { id, server, setup: setupV2 }
+// One default export for both hosts: V1 reads `server`, V2 reads `id` + `setup`.
+// `define` is identity, so the V1 member rides along untouched.
+const definition = { id, setup: setupV2 } satisfies Plugin.Plugin
+const dual: Plugin.Plugin & { server: V1Plugin } = { ...definition, server }
+export default Plugin.define(dual)

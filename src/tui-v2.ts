@@ -3,15 +3,13 @@ import { parseTokenEdit, REASONING_LEVELS, reasoningLabel, resolveTokenEdit, typ
 import { isValidUrl } from "./security.js"
 import { id as pluginId } from "./ids.js"
 import type { AddProviderResult, ManualAddResult, ProviderRow, SiteRow } from "./server-v2.js"
+import type { Plugin as TuiPlugin } from "@opencode/plugin/tui"
 
 export const id = `${pluginId}.tui`
 
 const RPC_ID = pluginId
 
-interface RpcResult {
-  output?: unknown
-}
-
+// The menu only ever offers string values, so the host's generic select resolves to string.
 interface DialogSelectOption {
   title: string
   value: string
@@ -19,48 +17,12 @@ interface DialogSelectOption {
   category?: string
 }
 
-export interface DialogApi {
-  alert(options: { title: string; message: string }): Promise<void>
-  confirm(options: { title: string; message: string; label?: { confirm?: string; cancel?: string } }): Promise<boolean | undefined>
-  prompt(options: { title: string; description?: string; placeholder?: string; value?: string }): Promise<string | undefined>
-  select(options: {
-    title: string
-    placeholder?: string
-    options: readonly DialogSelectOption[]
-  }): Promise<string | undefined>
-}
+export type DialogApi = TuiPlugin.Context["ui"]["dialog"]
+export type ToastApi = TuiPlugin.Context["ui"]["toast"]
+export type KeymapLayer = ReturnType<Parameters<TuiPlugin.Context["keymap"]["layer"]>[0]>
 
-export interface ToastApi {
-  show(options: { title?: string; message: string; variant?: "info" | "success" | "warning" | "error" }): void
-}
-
-export interface KeymapLayer {
-  mode?: string
-  enabled?: boolean | (() => boolean)
-  priority?: number
-  commands?: readonly {
-    id?: string
-    title?: string
-    description?: string
-    group?: string
-    palette?: true
-    slash?: { name: string; aliases?: string[]; arguments?: true }
-    run: (input?: string) => void | Promise<void>
-  }[]
-}
-
-export interface V2TuiContext {
-  options: Readonly<Record<string, unknown>>
-  client: {
-    rpc: { call(input: { rpcID: string; method: string; input?: unknown }): Promise<RpcResult> }
-  }
-  ui: {
-    dialog: DialogApi
-    toast: ToastApi
-    panel: { open(name: string, options?: { presentation?: "panel" | "fullscreen" }): boolean }
-  }
-  keymap: { layer(factory: () => KeymapLayer): void }
-}
+// Imported, not re-declared: a local copy typechecks against itself and drifts silently.
+export type V2TuiContext = TuiPlugin.Context
 
 const FLAVOR_OPTIONS: readonly DialogSelectOption[] = Object.values(FLAVORS).map(spec => ({
   title: spec.label,
@@ -84,7 +46,7 @@ const SIMPLE_OPTIONS: readonly DialogSelectOption[] = [
 async function call<T>(ctx: V2TuiContext, method: string, input?: unknown): Promise<T> {
   // The RPC endpoint rejects a missing `input` with 400 "Expected object", so an
   // empty object must be sent explicitly for methods that take no arguments.
-  const result = await ctx.client.rpc.call({ rpcID: RPC_ID, method, input: input ?? {} })
+  const result = await ctx.client.rpc.call({ rpcID: RPC_ID, method, input: (input ?? {}) as Record<string, never> })
   return result.output as T
 }
 

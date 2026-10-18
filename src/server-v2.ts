@@ -19,7 +19,16 @@ import { chunkedAllSettled } from "./commands.js"
 import type { DisplayStyle, EnrichedModel } from "./enrich.js"
 
 import { id } from "./ids.js"
+import type { Plugin, Provider } from "@opencode/plugin"
+import type { Schema } from "effect"
+
 export { id }
+
+type ProviderID = Provider.ID
+
+// Not re-exported from the package root, so derive it from the editor a transform receives.
+type ProviderEditor = Parameters<Parameters<Plugin.Context["provider"]["transform"]>[0]>[0]
+type ProviderRecord = ReturnType<ProviderEditor["list"]>[number]
 
 const STORAGE_KEY = "providers"
 // Providers the user removed. Persisted because a transform's settings are not durable:
@@ -30,79 +39,8 @@ const DISCOVERED = "discovered"
 
 type Draft = Record<string, unknown>
 
-interface ProviderInfoDraft {
-  id: string
-  name: string
-  activation: "auto" | "enabled" | "disabled"
-  package?: string
-  integrationID?: string
-  settings?: Record<string, unknown>
-}
-
-interface ProviderRecord {
-  provider: ProviderInfoDraft
-  models: ReadonlyMap<string, Draft>
-}
-
-interface ProviderEditor {
-  list(): readonly ProviderRecord[]
-  get(providerID: string): ProviderRecord | undefined
-  update(providerID: string, update: (provider: ProviderInfoDraft) => void): void
-  models: {
-    update(providerID: string, modelID: string, update: (model: Draft) => void): void
-    remove(providerID: string, modelID: string): void
-  }
-}
-
-interface IntegrationEditor {
-  update(integrationID: string, update: (integration: { id: string; name: string }) => void): void
-  method: {
-    update(input: { integrationID: string; method: Record<string, unknown> }): void
-  }
-}
-
-interface ToolEditor {
-  namespace(namespace: { name: string; description: string }): void
-  add(tool: {
-    name: string
-    description: string
-    input: Record<string, unknown>
-    execute: (input: unknown, context?: unknown) => Promise<{ content: string }>
-  }): void
-}
-
-interface ConnectionInfo {
-  readonly type: "credential" | "env"
-  readonly id?: string
-  readonly name?: string
-}
-
-export interface V2Context {
-  provider: {
-    transform(callback: (providers: ProviderEditor) => void | Promise<void>): Promise<unknown>
-    reload(): Promise<void>
-  }
-  integration: {
-    transform(callback: (integrations: IntegrationEditor) => void | Promise<void>): Promise<unknown>
-    reload(): Promise<void>
-    connect: { key(input: { integrationID: string; key: string }): Promise<void> }
-    connection: {
-      active(integrationID: string): Promise<ConnectionInfo | undefined>
-      resolve(connection: ConnectionInfo): Promise<{ type: string; key?: string } | undefined>
-    }
-  }
-  tool: { transform(callback: (tools: ToolEditor) => void | Promise<void>): Promise<unknown> }
-  storage: {
-    get(key: string): Promise<unknown>
-    set(key: string, value: unknown): Promise<void>
-  }
-  rpc: {
-    register(
-      definition: Record<string, unknown>,
-      handlers: Record<string, (input: unknown, context?: unknown) => Promise<unknown>>,
-    ): Promise<unknown>
-  }
-}
+// Imported, not re-declared: a local copy typechecks against itself and drifts silently.
+export type V2Context = Plugin.Context
 
 interface ManagedProvider {
   baseURL: string
@@ -317,7 +255,7 @@ function candidateFrom(record: ProviderRecord, managed: ManagedProvider | undefi
   // "dynamic: false" is the marker remove() writes, so a removed provider stays removed.
   if (!managed && settings.dynamic === false) return undefined
   if (!managed && settings.dynamic !== true) {
-    const stored = [...record.models.values()].filter(model => model[DISCOVERED] !== true && model.enabled !== false)
+    const stored = [...record.models.values()].filter(model => (model as unknown as Record<string, unknown>)[DISCOVERED] !== true && model.enabled !== false)
     if (stored.length > 0) return undefined
   }
   const flavor =
@@ -418,7 +356,7 @@ export const setup = async (ctx: V2Context): Promise<void> => {
     if (!loaded) throw new Error("The saved provider list could not be read, so nothing was written. Restart opencode and try again.")
     await ctx.storage.set(
       STORAGE_KEY,
-      override ?? Object.fromEntries([...managed].map(([providerId, entry]) => [providerId, recordFor(providerId, entry)])),
+      (override ?? Object.fromEntries([...managed].map(([providerId, entry]) => [providerId, recordFor(providerId, entry)]))) as Schema.Json,
     )
   }
 
@@ -433,7 +371,10 @@ export const setup = async (ctx: V2Context): Promise<void> => {
     for (const [providerId, entry] of managed) {
       if (found.has(providerId) || removed.has(providerId)) continue
       const candidate = candidateFrom(
-        { provider: { id: providerId, name: providerId, activation: "enabled" }, models: new Map() },
+        {
+          provider: { id: providerId, name: providerId, activation: "enabled" },
+          models: new Map(),
+        } as unknown as ProviderRecord,
         entry,
       )
       if (candidate) found.set(providerId, candidate)
@@ -445,13 +386,13 @@ export const setup = async (ctx: V2Context): Promise<void> => {
     const configIds = new Set(
       providers.list()
         .filter(record => !managed.has(record.provider.id) && record.provider.settings?.dynamic !== false)
-        .map(record => record.provider.id),
+        .map(record => String(record.provider.id)),
     )
     for (const providerId of removed) {
       // A tombstone for a built-in id (e.g. "opencode") must never disable opencode's own provider.
       if (collisionSuggestion(providerId)) continue
       if (configIds.has(providerId)) continue
-      providers.update(providerId, (provider) => {
+      providers.update(providerId as ProviderID, (provider) => {
         provider.activation = "disabled"
       })
     }
@@ -468,8 +409,9 @@ export const setup = async (ctx: V2Context): Promise<void> => {
     for (const [providerId, models] of discovered) {
       for (const [modelId, draft] of models) {
         providers.models.update(providerId, modelId, (model) => {
-          mergeDiscoveredIntoStored(model, draft)
-          model[DISCOVERED] = true
+          const mutable = model as unknown as Record<string, unknown>
+          mergeDiscoveredIntoStored(mutable, draft)
+          mutable[DISCOVERED] = true
         })
       }
     }
@@ -548,9 +490,26 @@ export const setup = async (ctx: V2Context): Promise<void> => {
     // so the next probe does not re-walk the candidate list.
     const entry = managed.get(providerId)
     if (entry) entry.baseURL = baseURL
+    // `reload()` replays the provider transform later, not before it returns, so a provider
+    // added here is absent from `candidates` until that replay lands. Registering it now is
+    // what lets the very next call (reprobe, list, edit) see the provider it just created.
+    const known = candidates.get(providerId)
+    candidates.set(providerId, {
+      providerId,
+      baseURL,
+      apiKey: known?.apiKey,
+      overrideKey: known?.overrideKey,
+      flavor: known?.flavor ?? DEFAULT_FLAVOR,
+      displayStyle,
+    })
     // Persist before publishing to the host, so a crash right after cannot lose the models.
     await persist()
     await reloadQuietly()
+    // The transform replay that fills storedIds/storedModels runs after this returns, so a
+    // reprobe issued right after an add would otherwise find no baseline and refuse to diff.
+    // Seeding both maps here is safe: the replay overwrites them with the same data.
+    storedIds.set(providerId, new Set(models.keys()))
+    storedModels.set(providerId, new Map([...models].map(([modelId, draft]) => [modelId, storedModelView(modelId, draft)])))
   }
 
   interface RefreshOutcome {
@@ -1561,8 +1520,9 @@ if ((managed.has(input.providerId) || candidates.has(input.providerId)) && !inpu
         }
         for (const [modelId, draft] of discovered.get(clean) ?? new Map<string, V2ModelDraft>()) {
           providers.models.update(clean, modelId, (model) => {
-            mergeDiscoveredIntoStored(model, draft)
-            model[DISCOVERED] = true
+            const mutable = model as unknown as Record<string, unknown>
+            mergeDiscoveredIntoStored(mutable, draft)
+            mutable[DISCOVERED] = true
           })
         }
       })
